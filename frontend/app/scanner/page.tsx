@@ -549,7 +549,11 @@ export default function ScannerPage() {
                   : `${selectedWatchlist?.count ?? 0} tickers`}
               </span>
             </span>
-            <span className="whitespace-nowrap text-xs font-semibold text-muted">
+            <span className={`whitespace-nowrap rounded border px-2 py-1 text-xs font-bold transition-colors ${
+              watchlistsOpen
+                ? "border-accent/50 bg-accent/15 text-accent"
+                : "border-yellow/40 bg-yellow/10 text-yellow"
+            }`}>
               {watchlistsOpen ? "Hide" : "Options"}
             </span>
           </button>
@@ -618,16 +622,47 @@ export default function ScannerPage() {
 
         {!scannerCollapsed && watchlistsOpen && (
           <div className="flex flex-wrap gap-2 rounded-lg border border-border bg-surface/30 px-3 py-2">
-            {WATCHLISTS.map(w => (
-              <button key={w.key} onClick={() => setWatchlist(w.key)}
-                className={`px-3 py-1.5 text-xs rounded-lg font-semibold border transition-colors ${
-                  watchlist === w.key
-                    ? "bg-accent text-black border-accent"
-                    : "border-border text-muted hover:text-white hover:border-white/20"
-                }`}>
-                {w.label}
-              </button>
-            ))}
+            {WATCHLISTS.map(w => {
+              if (w.key === "custom" && watchlist === "custom") {
+                return (
+                  <div key={w.key} className="flex items-center gap-2 rounded-lg border border-accent/50 bg-surface px-2 py-1">
+                    <span className="text-xs font-semibold text-accent">Custom</span>
+                    <input
+                      autoFocus
+                      type="text"
+                      value={customInput}
+                      onChange={e => setCustomInput(e.target.value)}
+                      onKeyDown={e => e.key === "Enter" && !scanning && customInput.trim() && startScan()}
+                      placeholder="AAPL, MSFT"
+                      className="w-44 rounded border border-border bg-transparent px-2 py-1 text-xs font-mono text-white placeholder-muted focus:border-accent focus:outline-none"
+                    />
+                    <button
+                      onClick={scanning ? stopScan : startScan}
+                      disabled={!scanning && (!customInput.trim() || (mode === "backtest" && !backtestDate))}
+                      className={`rounded px-3 py-1 text-xs font-bold transition-colors ${
+                        scanning
+                          ? "border border-red/30 bg-red/20 text-red hover:bg-red/30"
+                          : !customInput.trim() || (mode === "backtest" && !backtestDate)
+                            ? "border border-border bg-card text-muted cursor-not-allowed"
+                            : "border border-accent bg-accent text-black hover:bg-accent/85"
+                      }`}
+                    >
+                      {scanning ? "STOP" : "SCAN"}
+                    </button>
+                  </div>
+                );
+              }
+              return (
+                <button key={w.key} onClick={() => setWatchlist(w.key)}
+                  className={`px-3 py-1.5 text-xs rounded-lg font-semibold border transition-colors ${
+                    watchlist === w.key
+                      ? "bg-accent text-black border-accent"
+                      : "border-border text-muted hover:text-white hover:border-white/20"
+                  }`}>
+                  {w.label}
+                </button>
+              );
+            })}
           </div>
         )}
 
@@ -656,6 +691,19 @@ export default function ScannerPage() {
                   placeholder="AAPL, NVDA, TSLA, MSFT ..."
                   className="flex-1 max-w-lg bg-surface border border-border rounded-lg px-3 py-2 text-sm text-white placeholder-muted focus:outline-none focus:border-accent font-mono"
                 />
+                <button
+                  onClick={scanning ? stopScan : startScan}
+                  disabled={!scanning && (!customInput.trim() || (mode === "backtest" && !backtestDate))}
+                  className={`px-4 py-2 rounded-lg text-xs font-bold uppercase transition-colors ${
+                    scanning
+                      ? "bg-red/20 text-red border border-red/30 hover:bg-red/30"
+                      : !customInput.trim() || (mode === "backtest" && !backtestDate)
+                        ? "bg-surface text-muted border border-border cursor-not-allowed"
+                        : "bg-accent text-black border border-accent hover:bg-accent/85"
+                  }`}
+                >
+                  {scanning ? "Stop" : "Scan"}
+                </button>
                 {customInput && (
                   <span className="text-xs text-muted">
                     {customInput.split(",").filter(t => t.trim()).length} ticker{customInput.split(",").filter(t => t.trim()).length !== 1 ? "s" : ""}
