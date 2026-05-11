@@ -19,10 +19,21 @@ interface FearGreed {
   rating: string;
 }
 
+interface EconomicEvent {
+  day:    string;
+  date:   string;
+  title:  string;
+  time?:  string;
+  impact: string;
+  note?:  string;
+}
+
 interface MacroData {
   items:       MacroItem[];
   fear_greed:  FearGreed;
   risk:        { score: number; label: string; notes: string[] };
+  economic_events?: EconomicEvent[];
+  econ_refresh_date?: string;
 }
 
 const KEY_TICKERS = ["SPY", "QQQ", "^VIX", "GLD", "TLT"];
@@ -32,6 +43,11 @@ function sectorTone(chg1d: number) {
   if (chg1d >= 0.25) return { label: "Green", dot: "bg-green", text: "text-green", border: "border-green/25", bg: "bg-green/5" };
   if (chg1d <= -0.25) return { label: "Red", dot: "bg-red", text: "text-red", border: "border-red/25", bg: "bg-red/5" };
   return { label: "Yellow", dot: "bg-yellow", text: "text-yellow", border: "border-yellow/25", bg: "bg-yellow/5" };
+}
+
+function eventTone(event: EconomicEvent) {
+  if (event.impact === "High") return "border-yellow/35 bg-yellow/10 text-yellow";
+  return "border-border bg-card/60 text-muted";
 }
 
 export default function MarketRisk() {
@@ -96,7 +112,7 @@ export default function MarketRisk() {
 
   if (!data) return null;
 
-  const { risk, items, fear_greed } = data;
+  const { risk, items, fear_greed, economic_events } = data;
 
   const fgScore  = fear_greed?.score;
   const fgColor  =
@@ -134,6 +150,24 @@ export default function MarketRisk() {
         </div>
 
         {/* Risk notes — hidden on mobile */}
+        {economic_events && economic_events.length > 0 && (
+          <div className="flex items-center gap-1.5 overflow-x-auto whitespace-nowrap text-[10px]">
+            <span className="font-semibold uppercase tracking-wide text-muted">Econ</span>
+            {economic_events.slice(0, 2).map(event => (
+              <span
+                key={`${event.day}-${event.date}`}
+                className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 ${eventTone(event)}`}
+                title={`${event.day} ${event.date}: ${event.note ?? event.title}${event.time ? ` at ${event.time}` : ""}. Daily refresh.`}
+              >
+                <span className={`h-1.5 w-1.5 rounded-full ${event.impact === "High" ? "bg-yellow" : "bg-muted"}`} />
+                <span className="font-semibold">{event.day}</span>
+                <span>{event.title === "No major scheduled" ? "No major" : event.title}</span>
+                {event.time && <span className="text-muted">{event.time.replace(" AM ET", "a").replace(" PM ET", "p")}</span>}
+              </span>
+            ))}
+          </div>
+        )}
+
         {risk.notes.length > 0 && (
           <div className="hidden md:flex items-center gap-1 text-[11px] text-muted">
             {risk.notes.map((n, i) => (

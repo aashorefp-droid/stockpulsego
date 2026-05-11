@@ -24,9 +24,20 @@ type Risk struct {
 	Notes []string `json:"notes"`
 }
 
+type EconEvent struct {
+	Day    string `json:"day"`
+	Date   string `json:"date"`
+	Title  string `json:"title"`
+	Time   string `json:"time"`
+	Impact string `json:"impact"`
+	Note   string `json:"note"`
+}
+
 type Snapshot struct {
-	Items []Item `json:"items"`
-	Risk  Risk   `json:"risk"`
+	Items           []Item      `json:"items"`
+	Risk            Risk        `json:"risk"`
+	EconomicEvents  []EconEvent `json:"economic_events"`
+	EconRefreshDate string      `json:"econ_refresh_date"`
 }
 
 // VIXY is used as a proxy for ^VIX since Alpaca doesn't expose index symbols.
@@ -53,6 +64,40 @@ var instruments = []struct {
 	{"XLU", "Utilities", "sector"},
 	{"XLV", "Health", "sector"},
 	{"XLY", "Discretionary", "sector"},
+}
+
+var econEvents = []struct {
+	Date, Title, Time, Impact, Note string
+	Priority                        int
+}{
+	{"2026-05-12", "CPI", "08:30 AM ET", "High", "Consumer Price Index for Apr 2026", 100},
+	{"2026-06-10", "CPI", "08:30 AM ET", "High", "Consumer Price Index for May 2026", 100},
+	{"2026-07-14", "CPI", "08:30 AM ET", "High", "Consumer Price Index for Jun 2026", 100},
+	{"2026-08-12", "CPI", "08:30 AM ET", "High", "Consumer Price Index for Jul 2026", 100},
+	{"2026-09-11", "CPI", "08:30 AM ET", "High", "Consumer Price Index for Aug 2026", 100},
+	{"2026-10-14", "CPI", "08:30 AM ET", "High", "Consumer Price Index for Sep 2026", 100},
+	{"2026-11-10", "CPI", "08:30 AM ET", "High", "Consumer Price Index for Oct 2026", 100},
+	{"2026-12-10", "CPI", "08:30 AM ET", "High", "Consumer Price Index for Nov 2026", 100},
+	{"2026-05-13", "PPI", "08:30 AM ET", "High", "Producer Price Index for Apr 2026", 80},
+	{"2026-06-11", "PPI", "08:30 AM ET", "High", "Producer Price Index for May 2026", 80},
+	{"2026-07-15", "PPI", "08:30 AM ET", "High", "Producer Price Index for Jun 2026", 80},
+	{"2026-08-13", "PPI", "08:30 AM ET", "High", "Producer Price Index for Jul 2026", 80},
+	{"2026-09-10", "PPI", "08:30 AM ET", "High", "Producer Price Index for Aug 2026", 80},
+	{"2026-10-15", "PPI", "08:30 AM ET", "High", "Producer Price Index for Sep 2026", 80},
+	{"2026-11-13", "PPI", "08:30 AM ET", "High", "Producer Price Index for Oct 2026", 80},
+	{"2026-12-15", "PPI", "08:30 AM ET", "High", "Producer Price Index for Nov 2026", 80},
+	{"2026-06-05", "Jobs", "08:30 AM ET", "High", "Employment Situation for May 2026", 90},
+	{"2026-07-02", "Jobs", "08:30 AM ET", "High", "Employment Situation for Jun 2026", 90},
+	{"2026-08-07", "Jobs", "08:30 AM ET", "High", "Employment Situation for Jul 2026", 90},
+	{"2026-09-04", "Jobs", "08:30 AM ET", "High", "Employment Situation for Aug 2026", 90},
+	{"2026-10-02", "Jobs", "08:30 AM ET", "High", "Employment Situation for Sep 2026", 90},
+	{"2026-11-06", "Jobs", "08:30 AM ET", "High", "Employment Situation for Oct 2026", 90},
+	{"2026-12-04", "Jobs", "08:30 AM ET", "High", "Employment Situation for Nov 2026", 90},
+	{"2026-06-17", "FOMC", "02:00 PM ET", "High", "Fed statement / rate decision", 95},
+	{"2026-07-29", "FOMC", "02:00 PM ET", "High", "Fed statement / rate decision", 95},
+	{"2026-09-16", "FOMC", "02:00 PM ET", "High", "Fed statement / rate decision", 95},
+	{"2026-10-28", "FOMC", "02:00 PM ET", "High", "Fed statement / rate decision", 95},
+	{"2026-12-09", "FOMC", "02:00 PM ET", "High", "Fed statement / rate decision", 95},
 }
 
 type Service struct {
@@ -124,13 +169,66 @@ func (s *Service) Snapshot() (*Snapshot, error) {
 	}
 
 	risk := computeRisk(out)
-	snap := &Snapshot{Items: out, Risk: risk}
+	loc, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		loc = time.Local
+	}
+	today := time.Now().In(loc)
+	snap := &Snapshot{
+		Items:           out,
+		Risk:            risk,
+		EconomicEvents:  economicEvents(today),
+		EconRefreshDate: today.Format("2006-01-02"),
+	}
 
 	s.mu.Lock()
 	s.cache = snap
 	s.cacheAt = time.Now()
 	s.mu.Unlock()
 	return snap, nil
+}
+
+func economicEvents(today time.Time) []EconEvent {
+	day := time.Date(today.Year(), today.Month(), today.Day(), 0, 0, 0, 0, today.Location())
+	targets := []struct {
+		label string
+		date  time.Time
+	}{
+		{"Today", day},
+		{"Tomorrow", day.AddDate(0, 0, 1)},
+	}
+	out := make([]EconEvent, 0, len(targets))
+	for _, target := range targets {
+		dateStr := target.date.Format("2006-01-02")
+		bestIdx := -1
+		bestPriority := -1
+		for i, event := range econEvents {
+			if event.Date == dateStr && event.Priority > bestPriority {
+				bestIdx = i
+				bestPriority = event.Priority
+			}
+		}
+		if bestIdx >= 0 {
+			event := econEvents[bestIdx]
+			out = append(out, EconEvent{
+				Day:    target.label,
+				Date:   event.Date,
+				Title:  event.Title,
+				Time:   event.Time,
+				Impact: event.Impact,
+				Note:   event.Note,
+			})
+			continue
+		}
+		out = append(out, EconEvent{
+			Day:    target.label,
+			Date:   dateStr,
+			Title:  "No major scheduled",
+			Impact: "Low",
+			Note:   "No CPI, PPI, Employment Situation, or FOMC event scheduled.",
+		})
+	}
+	return out
 }
 
 func computeRisk(items []Item) Risk {
