@@ -19,7 +19,7 @@ const WATCHLISTS = [
 ];
 
 type Filter = "all" | "actionable" | "rank1" | "exceptional" | "high_short";
-type SortBy = "score" | "grade" | "rr" | "swingReward" | "dayReward" | "ltEntryPct";
+type SortBy = "score" | "grade" | "rr" | "swingReward" | "dayReward" | "ltEntryPct" | "valuation";
 
 const SORT_OPTIONS: { key: SortBy; label: string; title?: string }[] = [
   { key: "score",       label: "Score" },
@@ -28,6 +28,7 @@ const SORT_OPTIONS: { key: SortBy; label: string; title?: string }[] = [
   { key: "swingReward", label: "Swing Reward%", title: "Sort by Swing target reward percent" },
   { key: "dayReward",   label: "Day Reward%",   title: "Sort by Day Trading target reward percent" },
   { key: "ltEntryPct",  label: "LT Entry%",     title: "Sort by Long Term distance from entry" },
+  { key: "valuation",   label: "Valuation",     title: "Sort by Long Term valuation estimate" },
 ];
 
 interface OptLeg {
@@ -39,6 +40,13 @@ interface OptLeg {
   ask:        number;
   mid:        number;
   spread_pct?: number | null;
+}
+
+interface MacroItem {
+  ticker:   string;
+  label:    string;
+  category: string;
+  chg_1d:   number;
 }
 
 interface ScanResult {
@@ -217,6 +225,18 @@ function valuationClass(label?: string): string {
   return "border-yellow/30 bg-yellow/10 text-yellow";
 }
 
+function valuationSortValue(r: ScanResult): number {
+  if (typeof r.valuation_score === "number" && Number.isFinite(r.valuation_score)) {
+    return r.valuation_score;
+  }
+  const label = (r.valuation_label ?? "").toLowerCase();
+  if (label.includes("undervalued") || label.includes("attractive")) return 4;
+  if (label.includes("fair")) return 1;
+  if (label.includes("expensive")) return -2;
+  if (label.includes("overvalued")) return -4;
+  return -999;
+}
+
 function fmtMoney(value?: number | null): string {
   return typeof value === "number" && Number.isFinite(value) ? `$${value}` : "—";
 }
@@ -262,6 +282,29 @@ function longTermFromEntryPctValue(r: ScanResult): number {
   return Math.abs((r.price - r.lre_entry) / r.lre_entry * 100);
 }
 
+function sectorTone(chg1d: number) {
+  if (chg1d >= 0.25) return { label: "Green", dot: "bg-green", text: "text-green", border: "border-green/40", bg: "bg-green/10" };
+  if (chg1d <= -0.25) return { label: "Red", dot: "bg-red", text: "text-red", border: "border-red/40", bg: "bg-red/10" };
+  return { label: "Yellow", dot: "bg-yellow", text: "text-yellow", border: "border-yellow/40", bg: "bg-yellow/10" };
+}
+
+function sectorMacroKey(sector?: string): string | null {
+  const s = (sector ?? "").toLowerCase();
+  if (!s || s === "unknown") return null;
+  if (s.includes("material") || s.includes("basic")) return "Materials";
+  if (s.includes("communication") || s.includes("comm") || s.includes("telecom")) return "Comm";
+  if (s.includes("energy") || s.includes("oil")) return "Energy";
+  if (s.includes("financial") || s.includes("bank")) return "Financials";
+  if (s.includes("industrial")) return "Industrials";
+  if (s.includes("technology") || s.includes("tech") || s.includes("semiconductor") || s.includes("software")) return "Tech";
+  if (s.includes("defensive") || s.includes("staple")) return "Staples";
+  if (s.includes("real estate") || s.includes("reits") || s.includes("reit")) return "Real Estate";
+  if (s.includes("utilit")) return "Utilities";
+  if (s.includes("health") || s.includes("medical") || s.includes("biotech")) return "Health";
+  if (s.includes("cyclical") || s.includes("discretionary") || s.includes("consumer")) return "Discretionary";
+  return null;
+}
+
 function prevTradingDay(dateStr: string): { date: string; note: string | null } {
   const [y, m, d] = dateStr.split("-").map(Number);
   const jsDay = new Date(Date.UTC(y, m - 1, d)).getUTCDay(); // 0=Sun, 6=Sat
@@ -278,7 +321,11 @@ function prevTradingDay(dateStr: string): { date: string; note: string | null } 
 
 export default function ScannerPage() {
   const [watchlist,    setWatchlist]    = useState("default");
+  const [watchlistsOpen, setWatchlistsOpen] = useState(false);
+  const [scannerCollapsed, setScannerCollapsed] = useState(false);
+  const [houseRulesOpen, setHouseRulesOpen] = useState(true);
   const [customInput,  setCustomInput]  = useState("");
+  const [tickerFilter, setTickerFilter] = useState("");
   const [scanning,     setScanning]     = useState(false);
   const [results,      setResults]      = useState<ScanResult[]>([]);
   const [progress,     setProgress]     = useState({ done: 0, total: 0 });
@@ -290,6 +337,7 @@ export default function ScannerPage() {
   const [mode,         setMode]         = useState<"live" | "backtest">("live");
   const [backtestDate, setBacktestDate] = useState("");
   const [activeBacktestDate, setActiveBacktestDate] = useState<string | null>(null);
+  const [sectorMacro,  setSectorMacro]  = useState<Record<string, MacroItem>>({});
   const esRef = useRef<EventSource | null>(null);
 
   useEffect(() => {
@@ -298,6 +346,22 @@ export default function ScannerPage() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [optModal]);
+
+  useEffect(() => {
+    let alive = true;
+    fetch(`${API_BASE}/api/macro/snapshot`)
+      .then(res => res.ok ? res.json() : null)
+      .then(json => {
+        if (!alive || !json?.items) return;
+        const sectors: Record<string, MacroItem> = {};
+        (json.items as MacroItem[])
+          .filter(item => item.category === "sector")
+          .forEach(item => { sectors[item.label] = item; });
+        setSectorMacro(sectors);
+      })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, []);
 
   function copyText(text: string) {
     navigator.clipboard.writeText(text).catch(() => {});
@@ -346,6 +410,7 @@ export default function ScannerPage() {
       setProgress({ done: json.count, total: json.count });
       setActiveBacktestDate(json.date);
       setSnapshotStatus("");
+      setScannerCollapsed(true);
     } catch (e: any) {
       setSnapshotStatus(`Failed: ${e?.message ?? e}`);
     } finally {
@@ -356,6 +421,7 @@ export default function ScannerPage() {
   function startScan() {
     if (esRef.current) esRef.current.close();
     setSnapshotStatus("");
+    setScannerCollapsed(false);
 
     // For NYSE/NASDAQ swing in live mode, prefer the saved snapshot (faster).
     if (mode === "live" && SNAPSHOT_WATCHLISTS.includes(watchlist)) {
@@ -396,6 +462,7 @@ export default function ScannerPage() {
       if (data.done) {
         setScanning(false);
         setProgress(p => ({ ...p, done: data.total ?? p.done }));
+        setScannerCollapsed(true);
         es.close();
         return;
       }
@@ -415,9 +482,14 @@ export default function ScannerPage() {
   }
 
   const gradeRank: Record<string, number> = { S: 0, A: 1, B: 2, "B-": 3, C: 4, D: 5 };
+  const tickerFilterTokens = tickerFilter
+    .split(/[\s,]+/)
+    .map(t => t.trim().toUpperCase())
+    .filter(Boolean);
 
   const filtered = results
     .filter(r => !r.error && r.verdict)
+    .filter(r => tickerFilterTokens.length === 0 || tickerFilterTokens.includes(r.ticker.toUpperCase()))
     .filter(r => {
       if (filter === "rank1")     return r.mtf_rank === 1;
       if (filter === "high_short") return (r.short_pct ?? 0) >= 10;
@@ -439,61 +511,52 @@ export default function ScannerPage() {
       if (sortBy === "swingReward") return rewardPctValue(b.entry, b.target1) - rewardPctValue(a.entry, a.target1);
       if (sortBy === "dayReward")   return rewardPctValue(b.cpr_day_entry, b.cpr_day_t1) - rewardPctValue(a.cpr_day_entry, a.cpr_day_t1);
       if (sortBy === "ltEntryPct")  return longTermFromEntryPctValue(b) - longTermFromEntryPctValue(a);
+      if (sortBy === "valuation")   return valuationSortValue(b) - valuationSortValue(a);
       return 0;
     });
 
   const errors  = results.filter(r => r.error);
   const pct     = progress.total > 0 ? Math.round((progress.done / progress.total) * 100) : 0;
+  const selectedWatchlist = WATCHLISTS.find(w => w.key === watchlist);
+  const customTickerCount = customInput.split(",").filter(t => t.trim()).length;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
 
       {/* ── Header ── */}
-      <div className="flex flex-wrap items-end gap-4">
-        <div>
-          <h1 className="text-3xl font-bold text-white">Scanner</h1>
-          <p className="text-muted text-sm mt-0.5">Multi-stock scoring · Rank 1 signals · Exceptional setups</p>
-        </div>
-      </div>
-
       {/* ── Controls ── */}
-      <div className="card space-y-4">
-        <div className="flex flex-wrap gap-2 items-center">
-          <span className="text-sm text-muted mr-1">Watchlist:</span>
-          {WATCHLISTS.map(w => (
-            <button key={w.key} onClick={() => setWatchlist(w.key)}
-              className={`px-3 py-1.5 text-xs rounded-lg font-semibold border transition-colors ${
-                watchlist === w.key
-                  ? "bg-accent text-black border-accent"
-                  : "border-border text-muted hover:text-white hover:border-white/20"
-              }`}>
-              {w.label}
-            </button>
-          ))}
-        </div>
-
-        {watchlist === "custom" && (
-          <div className="flex gap-2 items-center">
-            <input
-              type="text"
-              value={customInput}
-              onChange={e => setCustomInput(e.target.value)}
-              onKeyDown={e => e.key === "Enter" && !scanning && startScan()}
-              placeholder="AAPL, NVDA, TSLA, MSFT ..."
-              className="flex-1 max-w-lg bg-surface border border-border rounded-lg px-3 py-2 text-sm text-white placeholder-muted focus:outline-none focus:border-accent font-mono"
-            />
-            {customInput && (
-              <span className="text-xs text-muted">
-                {customInput.split(",").filter(t => t.trim()).length} ticker{customInput.split(",").filter(t => t.trim()).length !== 1 ? "s" : ""}
+      <div className="card space-y-3">
+        <div className="flex items-center gap-3 overflow-x-auto rounded-lg border border-border bg-card/40 px-3 py-2">
+          <span className="shrink-0 text-lg font-bold text-white">Scanner</span>
+          <button
+            type="button"
+            onClick={() => {
+              setScannerCollapsed(false);
+              setWatchlistsOpen(v => !v);
+            }}
+            className="inline-flex shrink-0 items-center gap-2 rounded-lg border border-border bg-surface/50 px-2 py-1.5 text-left hover:border-white/20"
+          >
+            <span className="inline-flex shrink-0 items-center gap-2">
+              <span className="rounded border border-border bg-surface px-2 py-1 text-[11px] font-bold uppercase tracking-wide text-muted">
+                Watch List
               </span>
-            )}
-          </div>
-        )}
-
-        {/* ── Mode toggle ── */}
-        <div className="flex flex-wrap gap-3 items-center">
-          <span className="text-sm text-muted">Mode:</span>
-          <div className="flex rounded-lg border border-border overflow-hidden">
+              <span className="rounded border border-border bg-card px-2 py-1 text-xs font-semibold text-white">
+                {selectedWatchlist?.label ?? watchlist}
+              </span>
+              <span className="text-xs text-muted">
+                {watchlist === "custom"
+                  ? `${customTickerCount} ticker${customTickerCount !== 1 ? "s" : ""}`
+                  : `${selectedWatchlist?.count ?? 0} tickers`}
+              </span>
+            </span>
+            <span className="whitespace-nowrap text-xs font-semibold text-muted">
+              {watchlistsOpen ? "Hide" : "Options"}
+            </span>
+          </button>
+          <span className="shrink-0 rounded border border-border bg-surface px-2 py-1 text-[11px] font-bold uppercase tracking-wide text-muted">
+            Mode
+          </span>
+          <div className="flex shrink-0 rounded-lg border border-border bg-surface overflow-hidden">
             <button
               onClick={() => setMode("live")}
               className={`px-4 py-1.5 text-xs font-semibold transition-colors ${
@@ -511,63 +574,237 @@ export default function ScannerPage() {
               ⏪ Backtest
             </button>
           </div>
-          {mode === "backtest" && (
-            <div className="flex flex-wrap gap-2 items-center">
-              <span className="text-xs text-muted">As of date:</span>
-              <input
-                type="date"
-                value={backtestDate}
-                max={new Date(Date.now() - 86400000).toISOString().split("T")[0]}
-                onChange={e => setBacktestDate(e.target.value)}
-                className="bg-surface border border-border rounded-lg px-3 py-1.5 text-sm text-white focus:outline-none focus:border-accent font-mono"
-              />
-              {!backtestDate && (
-                <span className="text-xs text-yellow">Pick a date to backtest</span>
-              )}
-              {backtestDate && prevTradingDay(backtestDate).note && (
-                <span className="text-xs text-yellow">{prevTradingDay(backtestDate).note}</span>
-              )}
-            </div>
-          )}
-        </div>
-
-        <div className="flex gap-3 items-center">
           <button
             onClick={scanning ? stopScan : startScan}
             disabled={!scanning && mode === "backtest" && !backtestDate}
-            className={`px-6 py-2 rounded-lg font-semibold text-sm transition-colors ${
+            className={`shrink-0 px-6 py-1.5 rounded-lg font-bold text-sm uppercase tracking-wide transition-all ${
               scanning
                 ? "bg-red/20 text-red border border-red/30 hover:bg-red/30"
                 : mode === "backtest" && !backtestDate
                   ? "bg-surface text-muted border border-border cursor-not-allowed"
-                  : "bg-accent text-black hover:bg-accent/80"
-            }`}>
-            {scanning ? "⏹ Stop" : mode === "backtest" ? "⏪ Backtest" : "▶ Scan"}
+                  : "bg-accent text-black border border-accent hover:bg-accent/85"
+            }`}
+          >
+            {scanning ? "⏹ STOP" : mode === "backtest" ? "⏪ BACKTEST" : "▶ SCAN"}
           </button>
-
-          {(scanning || results.length > 0) && (
-            <div className="flex-1 max-w-xs">
-              <div className="flex justify-between text-xs text-muted mb-1">
+          {(scanning || results.length > 0 || snapshotStatus) && (
+            <div className="shrink-0 min-w-[230px] max-w-[280px]">
+              <div className="mb-1 flex items-center justify-between gap-3 text-[11px] text-muted">
                 <span>{progress.done} / {progress.total} scanned</span>
                 <span>{pct}%</span>
               </div>
-              <div className="h-1.5 bg-surface rounded-full overflow-hidden">
-                <div className="h-full bg-accent transition-all duration-300 rounded-full"
+              <div className="h-1.5 overflow-hidden rounded-full bg-surface">
+                <div className="h-full rounded-full bg-accent/80 transition-all duration-300"
                      style={{ width: `${pct}%` }} />
+              </div>
+              <div className="mt-1 flex flex-wrap gap-x-2 text-[10px] text-muted">
+                {results.length > 0 && !scanning && (
+                  <span>{filtered.length} shown · {errors.length} errors</span>
+                )}
+                {snapshotStatus && <span className="text-accent">{snapshotStatus}</span>}
               </div>
             </div>
           )}
-
           {results.length > 0 && !scanning && (
-            <span className="text-xs text-muted">
-              {filtered.length} shown · {errors.length} errors
-            </span>
+            <button
+              type="button"
+              onClick={() => setScannerCollapsed(v => !v)}
+              className="shrink-0 rounded-lg border border-border bg-surface px-3 py-1.5 text-xs font-semibold text-muted hover:border-white/20 hover:text-white"
+            >
+              {scannerCollapsed ? "Expand" : "Collapse"}
+            </button>
+          )}
+        </div>
+
+        {!scannerCollapsed && watchlistsOpen && (
+          <div className="flex flex-wrap gap-2 rounded-lg border border-border bg-surface/30 px-3 py-2">
+            {WATCHLISTS.map(w => (
+              <button key={w.key} onClick={() => setWatchlist(w.key)}
+                className={`px-3 py-1.5 text-xs rounded-lg font-semibold border transition-colors ${
+                  watchlist === w.key
+                    ? "bg-accent text-black border-accent"
+                    : "border-border text-muted hover:text-white hover:border-white/20"
+                }`}>
+                {w.label}
+              </button>
+            ))}
+          </div>
+        )}
+
+        <div className="space-y-3">
+          {!scannerCollapsed && (
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="flex min-w-[260px] max-w-md flex-1 items-center gap-2">
+              <span className="shrink-0 rounded border border-accent/30 bg-accent/10 px-2 py-1 text-[10px] font-bold uppercase tracking-wide text-accent">
+                Filter
+              </span>
+              <input
+                type="text"
+                value={tickerFilter}
+                onChange={e => setTickerFilter(e.target.value)}
+                placeholder="One or many tickers: AAPL, MSFT"
+                className="min-w-0 flex-1 rounded-lg border border-border bg-surface px-3 py-1.5 text-xs font-mono text-white placeholder-muted focus:border-accent focus:outline-none"
+              />
+            </div>
+            {watchlist === "custom" && (
+              <div className="flex gap-2 items-center">
+                <input
+                  type="text"
+                  value={customInput}
+                  onChange={e => setCustomInput(e.target.value)}
+                  onKeyDown={e => e.key === "Enter" && !scanning && startScan()}
+                  placeholder="AAPL, NVDA, TSLA, MSFT ..."
+                  className="flex-1 max-w-lg bg-surface border border-border rounded-lg px-3 py-2 text-sm text-white placeholder-muted focus:outline-none focus:border-accent font-mono"
+                />
+                {customInput && (
+                  <span className="text-xs text-muted">
+                    {customInput.split(",").filter(t => t.trim()).length} ticker{customInput.split(",").filter(t => t.trim()).length !== 1 ? "s" : ""}
+                  </span>
+                )}
+              </div>
+            )}
+
+            {mode === "backtest" && (
+              <div className="flex flex-wrap gap-2 items-center">
+                <span className="text-xs text-muted">As of date:</span>
+                <input
+                  type="date"
+                  value={backtestDate}
+                  max={new Date(Date.now() - 86400000).toISOString().split("T")[0]}
+                  onChange={e => setBacktestDate(e.target.value)}
+                  className="bg-surface border border-border rounded-lg px-3 py-1.5 text-sm text-white focus:outline-none focus:border-accent font-mono"
+                />
+                {!backtestDate && (
+                  <span className="text-xs text-yellow">Pick a date to backtest</span>
+                )}
+                {backtestDate && prevTradingDay(backtestDate).note && (
+                  <span className="text-xs text-yellow">{prevTradingDay(backtestDate).note}</span>
+                )}
+              </div>
+            )}
+
+            {/* ── Mode toggle ── */}
+            <div className="hidden">
+              <span className="rounded border border-accent/40 bg-accent/15 px-2 py-1 text-[11px] font-bold uppercase tracking-wide text-accent">
+                Mode
+              </span>
+              <div className="flex rounded-lg border border-accent/40 bg-accent/5 shadow-[0_0_14px_rgba(96,165,250,0.12)] overflow-hidden">
+                <button
+                  onClick={() => setMode("live")}
+                  className={`px-4 py-1.5 text-xs font-semibold transition-colors ${
+                    mode === "live" ? "bg-accent text-black" : "text-muted hover:text-white bg-transparent"
+                  }`}
+                >
+                  ▶ Live
+                </button>
+                <button
+                  onClick={() => setMode("backtest")}
+                  className={`px-4 py-1.5 text-xs font-semibold transition-colors border-l border-border ${
+                    mode === "backtest" ? "bg-accent text-black" : "text-muted hover:text-white bg-transparent"
+                  }`}
+                >
+                  ⏪ Backtest
+                </button>
+              </div>
+              <button
+                onClick={scanning ? stopScan : startScan}
+                disabled={!scanning && mode === "backtest" && !backtestDate}
+                className={`px-6 py-1.5 rounded-lg font-bold text-sm uppercase tracking-wide transition-all ${
+                  scanning
+                    ? "bg-red/20 text-red border border-red/30 shadow-[0_0_16px_rgba(248,113,113,0.25)] hover:bg-red/30"
+                    : mode === "backtest" && !backtestDate
+                      ? "bg-surface text-muted border border-border cursor-not-allowed"
+                      : "bg-accent text-black ring-1 ring-accent/60 shadow-[0_0_20px_rgba(96,165,250,0.35)] hover:bg-accent/90 hover:shadow-[0_0_26px_rgba(96,165,250,0.5)]"
+                }`}
+              >
+                {scanning ? "⏹ STOP" : mode === "backtest" ? "⏪ BACKTEST" : "▶ SCAN"}
+              </button>
+              {mode === "backtest" && (
+                <div className="flex flex-wrap gap-2 items-center">
+                  <span className="text-xs text-muted">As of date:</span>
+                  <input
+                    type="date"
+                    value={backtestDate}
+                    max={new Date(Date.now() - 86400000).toISOString().split("T")[0]}
+                    onChange={e => setBacktestDate(e.target.value)}
+                    className="bg-surface border border-border rounded-lg px-3 py-1.5 text-sm text-white focus:outline-none focus:border-accent font-mono"
+                  />
+                  {!backtestDate && (
+                    <span className="text-xs text-yellow">Pick a date to backtest</span>
+                  )}
+                  {backtestDate && prevTradingDay(backtestDate).note && (
+                    <span className="text-xs text-yellow">{prevTradingDay(backtestDate).note}</span>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {false && (scanning || results.length > 0 || snapshotStatus) && (
+            <div className="flex gap-3 items-center">
+              {(scanning || results.length > 0) && (
+                <div className="flex-1 max-w-xs">
+                  <div className="flex justify-between text-xs text-muted mb-1">
+                    <span>{progress.done} / {progress.total} scanned</span>
+                    <span>{pct}%</span>
+                  </div>
+                  <div className="h-1.5 bg-surface rounded-full overflow-hidden">
+                    <div className="h-full bg-accent transition-all duration-300 rounded-full"
+                         style={{ width: `${pct}%` }} />
+                  </div>
+                </div>
+              )}
+
+              {results.length > 0 && !scanning && (
+                <span className="text-xs text-muted">
+                  {filtered.length} shown · {errors.length} errors
+                </span>
+              )}
+
+              {/* Snapshot loading status (NYSE/NASDAQ swing) */}
+              {snapshotStatus && (
+                <span className="text-xs text-accent">{snapshotStatus}</span>
+              )}
+            </div>
+            )}
+          </div>
           )}
 
-          {/* Snapshot loading status (NYSE/NASDAQ swing) */}
-          {snapshotStatus && (
-            <span className="text-xs text-accent">{snapshotStatus}</span>
-          )}
+          <div className="rounded-lg border border-border bg-surface/45 px-3 py-2 text-[10px] text-muted">
+            <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
+              <span className="text-xs font-semibold text-white">House Rules</span>
+              <div className="flex items-center gap-2">
+                <span className="rounded border border-yellow/30 bg-yellow/10 px-1.5 py-0.5 text-[9px] font-semibold text-yellow">
+                  Not financial advice
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setHouseRulesOpen(v => !v)}
+                  className="rounded border border-border px-2 py-0.5 text-[9px] font-semibold text-muted hover:border-white/20 hover:text-white"
+                >
+                  {houseRulesOpen ? "Collapse" : "Expand"}
+                </button>
+              </div>
+            </div>
+            {houseRulesOpen && (
+            <div className="grid grid-cols-1 gap-x-4 gap-y-1.5 sm:grid-cols-2 xl:grid-cols-4">
+              {[
+                "Respect stop loss; no averaging after invalidation.",
+                "Plan entry, target, size, and exit before taking the trade.",
+                "Always check the \"lightning symbol\" (⚡) for unusual volume tickers.",
+                "For day trades, confirm market sentiment before entry.",
+                "Day trades need liquidity, confirmation, and smaller risk.",
+                "Options can expire worthless; favor defined risk and liquid chains.",
+                "Do not chase gaps; wait for trigger or clean retest.",
+                "Scanner output is a decision aid, not a trade command.",
+              ].map(rule => (
+                <div key={rule} className="flex gap-2 leading-snug">
+                  <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-accent/80" />
+                  <span>{rule}</span>
+                </div>
+              ))}
+            </div>
+            )}
+          </div>
         </div>
       </div>
 
@@ -655,19 +892,24 @@ export default function ScannerPage() {
       {/* ── Results Table ── */}
       {filtered.length > 0 && (
         <div className="card p-0 overflow-hidden">
-          <div className="overflow-x-auto">
+          <div className="max-h-[72vh] overflow-auto">
             <table className="min-w-full table-auto text-sm" style={{ borderCollapse: "collapse", width: "max-content" }}>
-              <thead>
-                <tr className="border-b border-border text-muted text-xs">
+              <thead className="sticky top-0 z-30 bg-card">
+                <tr className="border-b border-border bg-card text-muted text-xs shadow-[0_1px_0_rgba(148,163,184,0.2)]">
                   {/* sticky ticker column */}
-                  <th className="text-left pl-4 pr-3 py-3 whitespace-nowrap sticky left-0 bg-card z-10">Ticker</th>
+                  <th className="text-left pl-4 pr-3 py-3 whitespace-nowrap sticky left-0 bg-card z-40">Ticker</th>
                   <th className="w-[88px] min-w-[88px] max-w-[88px] text-center px-2 py-3">Sector</th>
                   <th className="text-right px-3 py-3 whitespace-nowrap">Price</th>
                   <th className="text-center px-3 py-3 whitespace-nowrap">Verdict</th>
                   <th className="text-center px-3 py-3 whitespace-nowrap" title="Low Risk Entry score">Long Term</th>
                   <th className="text-left px-2 py-3 whitespace-nowrap border-l border-border/60 text-accent">SWING</th>
                   <th className="text-left px-2 py-3 whitespace-nowrap border-l border-border/60 text-yellow">Day Trading</th>
-                  <th className="text-left px-2 py-3 whitespace-nowrap border-l border-border/60 text-muted">Next Day</th>
+                  <th className="text-left px-2 py-3 whitespace-nowrap border-l border-border/60 text-muted" title="Prediction only. Use with caution and confirm with price action.">
+                    <span className="block leading-tight">
+                      <span className="block">Next Day</span>
+                      <span className="block text-[9px] font-normal text-yellow">(Prediction/use with Caution)</span>
+                    </span>
+                  </th>
                   <th className="w-[42px] text-right px-1.5 py-3 whitespace-nowrap">Short%</th>
                   <th className="text-left px-3 py-3 whitespace-nowrap">Options</th>
                 </tr>
@@ -692,6 +934,10 @@ export default function ScannerPage() {
                   const topPut = r.opt_liquid?.find(c => c.type === "PUT");
                   const hasOtmData = topCall || topPut;
                   const otmInterp = hasOtmData ? interpretOtmFlow(r.opt_liquid ?? []) : "";
+                  const sectorKey = sectorMacroKey(r.sector);
+                  const sectorItem = sectorKey ? sectorMacro[sectorKey] : undefined;
+                  const sectorToneInfo = sectorItem ? sectorTone(sectorItem.chg_1d) : null;
+                  const sectorSign = sectorItem && sectorItem.chg_1d > 0 ? "+" : "";
                   return (
                     <tr key={r.ticker}
                       className="border-b border-border/40 hover:bg-surface/50 transition-colors">
@@ -705,10 +951,19 @@ export default function ScannerPage() {
                       <td className="w-[88px] min-w-[88px] max-w-[88px] px-2 py-2.5 text-center align-middle">
                         {r.sector && r.sector !== "Unknown" ? (
                           <span
-                            className="inline-block w-[76px] rounded border border-border/60 bg-surface/60 px-1 py-0.5 text-[10px] leading-tight text-muted whitespace-normal break-words"
-                            title={r.sector}
+                            className={`inline-flex w-[76px] items-center justify-center gap-1 rounded border px-1 py-0.5 text-[10px] leading-tight whitespace-normal break-words ${
+                              sectorToneInfo
+                                ? `${sectorToneInfo.border} ${sectorToneInfo.bg} ${sectorToneInfo.text}`
+                                : "border-border/60 bg-surface/60 text-muted"
+                            }`}
+                            title={
+                              sectorItem
+                                ? `${r.sector}: sector ETF ${sectorItem.ticker} ${sectorSign}${sectorItem.chg_1d.toFixed(2)}% 1D. This is sector sentiment, not the ticker verdict.`
+                                : r.sector
+                            }
                           >
-                            {r.sector}
+                            {sectorToneInfo && <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${sectorToneInfo.dot}`} />}
+                            <span>{r.sector}</span>
                           </span>
                         ) : (
                           <span className="text-muted/40 text-xs">—</span>

@@ -42,6 +42,17 @@ var instruments = []struct {
 	{"SLV", "Silver", "commodity"},
 	{"USO", "Oil", "commodity"},
 	{"TLT", "Bonds 20Y", "bonds"},
+	{"XLB", "Materials", "sector"},
+	{"XLC", "Comm", "sector"},
+	{"XLE", "Energy", "sector"},
+	{"XLF", "Financials", "sector"},
+	{"XLI", "Industrials", "sector"},
+	{"XLK", "Tech", "sector"},
+	{"XLP", "Staples", "sector"},
+	{"XLRE", "Real Estate", "sector"},
+	{"XLU", "Utilities", "sector"},
+	{"XLV", "Health", "sector"},
+	{"XLY", "Discretionary", "sector"},
 }
 
 type Service struct {

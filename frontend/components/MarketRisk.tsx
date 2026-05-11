@@ -28,6 +28,12 @@ interface MacroData {
 const KEY_TICKERS = ["SPY", "QQQ", "^VIX", "GLD", "TLT"];
 const CNN_FNG_URL = "https://production.dataviz.cnn.io/index/fearandgreed/graphdata";
 
+function sectorTone(chg1d: number) {
+  if (chg1d >= 0.25) return { label: "Green", dot: "bg-green", text: "text-green", border: "border-green/25", bg: "bg-green/5" };
+  if (chg1d <= -0.25) return { label: "Red", dot: "bg-red", text: "text-red", border: "border-red/25", bg: "bg-red/5" };
+  return { label: "Yellow", dot: "bg-yellow", text: "text-yellow", border: "border-yellow/25", bg: "bg-yellow/5" };
+}
+
 export default function MarketRisk() {
   const [data, setData]           = useState<MacroData | null>(null);
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
@@ -115,6 +121,7 @@ export default function MarketRisk() {
   const keyItems = KEY_TICKERS
     .map(t => items.find(i => i.ticker === t))
     .filter(Boolean) as MacroItem[];
+  const sectorItems = items.filter(i => i.category === "sector");
 
   return (
     <div className="border-b border-border bg-card/40 px-4 py-2">
@@ -135,6 +142,31 @@ export default function MarketRisk() {
                 {n}
               </span>
             ))}
+          </div>
+        )}
+
+        {sectorItems.length > 0 && (
+          <div className="w-full overflow-x-auto">
+            <div className="flex items-center gap-1.5 whitespace-nowrap text-[10px]">
+              <span className="mr-1 font-semibold uppercase tracking-wide text-muted">Sector 1D</span>
+              {sectorItems.map(item => {
+                const tone = sectorTone(item.chg_1d);
+                const sign = item.chg_1d > 0 ? "+" : "";
+                return (
+                  <span
+                    key={item.ticker}
+                    className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 ${tone.border} ${tone.bg}`}
+                    title={`${item.label} (${item.ticker}) ${sign}${item.chg_1d.toFixed(2)}% 1D`}
+                  >
+                    <span className={`h-1.5 w-1.5 rounded-full ${tone.dot}`} />
+                    <span className="text-muted">{item.label}</span>
+                    <span className={`font-semibold ${tone.text}`}>
+                      {sign}{item.chg_1d.toFixed(1)}%
+                    </span>
+                  </span>
+                );
+              })}
+            </div>
           </div>
         )}
 
