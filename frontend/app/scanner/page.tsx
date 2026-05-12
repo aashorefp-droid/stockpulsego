@@ -81,6 +81,9 @@ interface ScanResult {
   valuation_label?: string;
   valuation_score?: number;
   valuation_reason?: string;
+  valuation_fair_value?: number | null;
+  valuation_upside_pct?: number | null;
+  valuation_source?: string;
   cpr_type?:     string;
   cpr_tc?:       number;
   cpr_bc?:       number;
@@ -91,6 +94,14 @@ interface ScanResult {
   cpr_day_entry?: number | null;
   cpr_day_stop?:  number | null;
   cpr_day_t1?:    number | null;
+  cpr_day_trigger_text?: string;
+  cpr_day_invalidation_text?: string;
+  cpr_day_target_text?: string;
+  cpr_day_volume_text?: string;
+  cpr_day_15m_volume_text?: string;
+  cpr_day_15m_volume_ratio?: number | null;
+  cpr_day_15m_volume_surge?: boolean;
+  cpr_day_ref?: string;
   next_day_date?: string;
   next_day_outcome?: string;
   next_day_bias?: string;
@@ -237,8 +248,34 @@ function valuationSortValue(r: ScanResult): number {
   return -999;
 }
 
+function valuationFairValue(r: ScanResult): number | null {
+  if (typeof r.valuation_fair_value === "number" && Number.isFinite(r.valuation_fair_value)) {
+    return r.valuation_fair_value;
+  }
+  if (typeof r.price === "number" && Number.isFinite(r.price) && typeof r.valuation_score === "number" && Number.isFinite(r.valuation_score)) {
+    const impliedPct = Math.max(-0.30, Math.min(0.30, r.valuation_score * 0.06));
+    return Number((r.price * (1 + impliedPct)).toFixed(2));
+  }
+  return null;
+}
+
+function valuationUpsidePct(r: ScanResult): number | null {
+  if (typeof r.valuation_upside_pct === "number" && Number.isFinite(r.valuation_upside_pct)) {
+    return r.valuation_upside_pct;
+  }
+  const fv = valuationFairValue(r);
+  if (fv != null && typeof r.price === "number" && Number.isFinite(r.price) && r.price > 0) {
+    return Number((((fv - r.price) / r.price) * 100).toFixed(1));
+  }
+  return null;
+}
+
 function fmtMoney(value?: number | null): string {
   return typeof value === "number" && Number.isFinite(value) ? `$${value}` : "—";
+}
+
+function fmtSignedPct(value?: number | null): string {
+  return typeof value === "number" && Number.isFinite(value) ? `${value >= 0 ? "+" : ""}${value.toFixed(1)}%` : "—";
 }
 
 function compactDayResult(value?: string): string {
@@ -257,6 +294,13 @@ function nextDayColor(bias?: string): string {
   if (!bias) return "text-muted";
   if (bias.includes("Above") || bias.includes("Bullish")) return "text-green";
   if (bias.includes("Below") || bias.includes("Bearish")) return "text-red";
+  return "text-yellow";
+}
+
+function dayVolumeColor(value?: string): string {
+  if (!value) return "text-muted";
+  if (value.startsWith("Confirmed") || value.startsWith("Supportive") || value.startsWith("15m Surge") || value.startsWith("15m Active")) return "text-green";
+  if (value.startsWith("Caution") || value.startsWith("15m Light")) return "text-red";
   return "text-yellow";
 }
 
@@ -418,14 +462,17 @@ export default function ScannerPage() {
     }
   }
 
-  function startScan() {
+  function startScan(scanWatchlist: string = watchlist) {
     if (esRef.current) esRef.current.close();
     setSnapshotStatus("");
     setScannerCollapsed(false);
+    if (scanWatchlist === "custom" && watchlist !== "custom") {
+      setWatchlist("custom");
+    }
 
     // For NYSE/NASDAQ swing in live mode, prefer the saved snapshot (faster).
-    if (mode === "live" && SNAPSHOT_WATCHLISTS.includes(watchlist)) {
-      loadSnapshot(watchlist);
+    if (mode === "live" && SNAPSHOT_WATCHLISTS.includes(scanWatchlist)) {
+      loadSnapshot(scanWatchlist);
       return;
     }
 
@@ -434,14 +481,14 @@ export default function ScannerPage() {
     let url: string;
     let total: number;
 
-    if (watchlist === "custom") {
+    if (scanWatchlist === "custom") {
       const tickers = customInput.split(",").map(t => t.trim().toUpperCase()).filter(Boolean);
       if (!tickers.length) return;
       total = tickers.length;
       url = `${API_BASE}/api/scanner/stream?tickers=${encodeURIComponent(tickers.join(","))}`;
     } else {
-      total = WATCHLISTS.find(w => w.key === watchlist)?.count ?? 50;
-      url = `${API_BASE}/api/scanner/stream?watchlist=${watchlist}`;
+      total = WATCHLISTS.find(w => w.key === scanWatchlist)?.count ?? 50;
+      url = `${API_BASE}/api/scanner/stream?watchlist=${scanWatchlist}`;
     }
 
     if (mode === "backtest" && backtestDate) {
@@ -579,7 +626,7 @@ export default function ScannerPage() {
             </button>
           </div>
           <button
-            onClick={scanning ? stopScan : startScan}
+            onClick={scanning ? stopScan : () => startScan()}
             disabled={!scanning && mode === "backtest" && !backtestDate}
             className={`shrink-0 px-6 py-1.5 rounded-lg font-bold text-sm uppercase tracking-wide transition-all ${
               scanning
@@ -632,12 +679,12 @@ export default function ScannerPage() {
                       type="text"
                       value={customInput}
                       onChange={e => setCustomInput(e.target.value)}
-                      onKeyDown={e => e.key === "Enter" && !scanning && customInput.trim() && startScan()}
+                      onKeyDown={e => e.key === "Enter" && !scanning && customInput.trim() && startScan("custom")}
                       placeholder="AAPL, MSFT"
                       className="w-44 rounded border border-border bg-transparent px-2 py-1 text-xs font-mono text-white placeholder-muted focus:border-accent focus:outline-none"
                     />
                     <button
-                      onClick={scanning ? stopScan : startScan}
+                      onClick={scanning ? stopScan : () => startScan("custom")}
                       disabled={!scanning && (!customInput.trim() || (mode === "backtest" && !backtestDate))}
                       className={`rounded px-3 py-1 text-xs font-bold transition-colors ${
                         scanning
@@ -667,50 +714,39 @@ export default function ScannerPage() {
         )}
 
         <div className="space-y-3">
-          {!scannerCollapsed && (
           <div className="flex flex-wrap items-center gap-3">
-            <div className="flex min-w-[260px] max-w-md flex-1 items-center gap-2">
+            <div className="flex min-w-[320px] max-w-2xl flex-1 items-center gap-2">
               <span className="shrink-0 rounded border border-accent/30 bg-accent/10 px-2 py-1 text-[10px] font-bold uppercase tracking-wide text-accent">
-                Filter
+                Custom
               </span>
               <input
                 type="text"
-                value={tickerFilter}
-                onChange={e => setTickerFilter(e.target.value)}
+                value={customInput}
+                onChange={e => setCustomInput(e.target.value)}
+                onFocus={() => setWatchlist("custom")}
+                onKeyDown={e => e.key === "Enter" && !scanning && customInput.trim() && startScan("custom")}
                 placeholder="One or many tickers: AAPL, MSFT"
                 className="min-w-0 flex-1 rounded-lg border border-border bg-surface px-3 py-1.5 text-xs font-mono text-white placeholder-muted focus:border-accent focus:outline-none"
               />
+              <button
+                onClick={scanning ? stopScan : () => startScan("custom")}
+                disabled={!scanning && (!customInput.trim() || (mode === "backtest" && !backtestDate))}
+                className={`shrink-0 rounded-lg px-4 py-1.5 text-xs font-bold uppercase transition-colors ${
+                  scanning
+                    ? "bg-red/20 text-red border border-red/30 hover:bg-red/30"
+                    : !customInput.trim() || (mode === "backtest" && !backtestDate)
+                      ? "bg-surface text-muted border border-border cursor-not-allowed"
+                      : "bg-accent text-black border border-accent hover:bg-accent/85"
+                }`}
+              >
+                {scanning ? "Stop" : "Scan"}
+              </button>
+              {customInput && (
+                <span className="shrink-0 text-xs text-muted">
+                  {customInput.split(",").filter(t => t.trim()).length} ticker{customInput.split(",").filter(t => t.trim()).length !== 1 ? "s" : ""}
+                </span>
+              )}
             </div>
-            {watchlist === "custom" && (
-              <div className="flex gap-2 items-center">
-                <input
-                  type="text"
-                  value={customInput}
-                  onChange={e => setCustomInput(e.target.value)}
-                  onKeyDown={e => e.key === "Enter" && !scanning && startScan()}
-                  placeholder="AAPL, NVDA, TSLA, MSFT ..."
-                  className="flex-1 max-w-lg bg-surface border border-border rounded-lg px-3 py-2 text-sm text-white placeholder-muted focus:outline-none focus:border-accent font-mono"
-                />
-                <button
-                  onClick={scanning ? stopScan : startScan}
-                  disabled={!scanning && (!customInput.trim() || (mode === "backtest" && !backtestDate))}
-                  className={`px-4 py-2 rounded-lg text-xs font-bold uppercase transition-colors ${
-                    scanning
-                      ? "bg-red/20 text-red border border-red/30 hover:bg-red/30"
-                      : !customInput.trim() || (mode === "backtest" && !backtestDate)
-                        ? "bg-surface text-muted border border-border cursor-not-allowed"
-                        : "bg-accent text-black border border-accent hover:bg-accent/85"
-                  }`}
-                >
-                  {scanning ? "Stop" : "Scan"}
-                </button>
-                {customInput && (
-                  <span className="text-xs text-muted">
-                    {customInput.split(",").filter(t => t.trim()).length} ticker{customInput.split(",").filter(t => t.trim()).length !== 1 ? "s" : ""}
-                  </span>
-                )}
-              </div>
-            )}
 
             {mode === "backtest" && (
               <div className="flex flex-wrap gap-2 items-center">
@@ -755,7 +791,7 @@ export default function ScannerPage() {
                 </button>
               </div>
               <button
-                onClick={scanning ? stopScan : startScan}
+                onClick={scanning ? stopScan : () => startScan()}
                 disabled={!scanning && mode === "backtest" && !backtestDate}
                 className={`px-6 py-1.5 rounded-lg font-bold text-sm uppercase tracking-wide transition-all ${
                   scanning
@@ -815,7 +851,6 @@ export default function ScannerPage() {
             </div>
             )}
           </div>
-          )}
 
           <div className="rounded-lg border border-border bg-surface/45 px-3 py-2 text-[10px] text-muted">
             <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
@@ -898,6 +933,16 @@ export default function ScannerPage() {
               </button>
             ))}
           </div>
+          <div className="flex min-w-[230px] max-w-sm flex-1 items-center gap-2">
+            <span className="shrink-0 text-xs text-muted">Filter:</span>
+            <input
+              type="text"
+              value={tickerFilter}
+              onChange={e => setTickerFilter(e.target.value)}
+              placeholder="AAPL, MSFT"
+              className="min-w-0 flex-1 rounded-lg border border-border bg-surface px-3 py-1.5 text-xs font-mono text-white placeholder-muted focus:border-accent focus:outline-none"
+            />
+          </div>
 
           <button
             onClick={() => downloadCsv(
@@ -905,9 +950,9 @@ export default function ScannerPage() {
               [
                 "Ticker","Sector","Price","Verdict","Long Term Grade","Long Term Status",
                 "Verdict Flip Date","Verdict Flip From","Days Since Flip",
-                "Long Term Entry Range","Long Term % From Entry","Long Term Risk%","Valuation","Valuation Reason",
+                "Long Term Entry Range","Long Term % From Entry","Long Term Risk%","Valuation","Valuation Fair Value","Valuation Upside%","Valuation Source","Valuation Reason",
                 "Swing Entry","Swing Stop","Swing T1","Swing Reward%","Swing Risk%","Swing R/R",
-                "Day Trading Result","Day Trading Entry","Day Trading Stop","Day Trading T1","Day Trading Reward%",
+                "Day Trading Result","Day Trading Entry","Day Trading Stop","Day Trading T1","Day Trading Reward%","Day Trading Trigger","Day Trading Invalidation","Day Trading Target Plan","Day Trading Volume Confirm","Day Trading 15m Volume Confirm","Day Trading Ref",
                 "Next Day Date","Next Day Outcome","Next Day Bias","Next Day Summary","Next Day ATR","Next Day ATR%","Next Day Up Trigger","Next Day Down Trigger","Next Day Pivot","Next Day Target",
                 "Short%","Options Strategy","Options Summary","Fundamental","CPR Text",
               ],
@@ -918,9 +963,10 @@ export default function ScannerPage() {
                 return [
                   r.ticker, r.sector, r.price, r.verdict, r.lre_label, r.lre_status,
                   r.verdict_flip_date, r.verdict_flip_from, r.verdict_flip_days,
-                  lreRangeText(r), lreFromEntry, r.lre_risk_pct, r.valuation_label, r.valuation_reason,
+                  lreRangeText(r), lreFromEntry, r.lre_risk_pct, r.valuation_label, valuationFairValue(r), valuationUpsidePct(r), r.valuation_source, r.valuation_reason,
                   r.entry, r.stop_loss, r.target1, rewardPct(r.entry, r.target1), r.risk_pct, r.rr_t1,
                   r.cpr_day_result, r.cpr_day_entry, r.cpr_day_stop, r.cpr_day_t1, rewardPct(r.cpr_day_entry, r.cpr_day_t1),
+                  r.cpr_day_trigger_text, r.cpr_day_invalidation_text, r.cpr_day_target_text, r.cpr_day_volume_text, r.cpr_day_15m_volume_text, r.cpr_day_ref,
                   r.next_day_date, r.next_day_outcome, r.next_day_bias, r.next_day_summary ?? r.next_day_prediction,
                   r.next_day_atr, r.next_day_atr_pct, r.next_day_trigger_up, r.next_day_trigger_down,
                   r.next_day_pivot, r.next_day_target,
@@ -1147,9 +1193,21 @@ export default function ScannerPage() {
                           {r.valuation_label && (
                             <span
                               className={`rounded border px-1.5 py-0.5 text-[9px] font-semibold ${valuationClass(r.valuation_label)}`}
-                              title={r.valuation_reason ?? "Current valuation estimate from fundamentals"}
+                              title={[r.valuation_source, r.valuation_reason].filter(Boolean).join(" | ") || "Current valuation estimate from fundamentals"}
                             >
                               {r.valuation_label}
+                            </span>
+                          )}
+                          {valuationFairValue(r) != null && (
+                            <span
+                              className={`rounded border px-1.5 py-0.5 text-[9px] font-mono ${
+                                (valuationUpsidePct(r) ?? 0) >= 0
+                                  ? "border-green/30 bg-green/10 text-green"
+                                  : "border-red/30 bg-red/10 text-red"
+                              }`}
+                              title={[r.valuation_source || "Score-implied fair value", r.valuation_reason].filter(Boolean).join(" | ")}
+                            >
+                              FV {fmtMoney(valuationFairValue(r))} {fmtSignedPct(valuationUpsidePct(r))}
                             </span>
                           )}
                           <a
@@ -1189,7 +1247,7 @@ export default function ScannerPage() {
                       </td>
                       <td
                         className="px-2 py-2 text-left text-[10px] whitespace-nowrap border-l border-border/30"
-                        title={r.cpr_interpretation ?? undefined}
+                        title={[r.cpr_interpretation, r.cpr_day_15m_volume_text, r.cpr_day_volume_text, r.cpr_day_ref].filter(Boolean).join(" | ") || undefined}
                       >
                         {r.cpr_day_result ? (
                           <div className="flex flex-col gap-0.5 leading-tight font-mono">
@@ -1208,6 +1266,17 @@ export default function ScannerPage() {
                               <span className="text-muted">T1</span><span className="text-right text-green">{fmtMoney(r.cpr_day_t1)}</span>
                               <span className="text-muted">Reward</span><span className="text-right text-green">{rewardPct(r.cpr_day_entry, r.cpr_day_t1)}</span>
                             </div>
+                            {(r.cpr_day_trigger_text || r.cpr_day_invalidation_text || r.cpr_day_target_text || r.cpr_day_15m_volume_text) && (
+                              <div className="mt-1 border-t border-border/30 pt-1">
+                                <div className="grid grid-cols-[34px_96px] gap-x-1 gap-y-0.5">
+                                  <span className="text-yellow">V2</span><span className="text-yellow whitespace-normal">Trigger</span>
+                                  <span className="text-muted">Trig</span><span className="text-right text-accent whitespace-normal">{r.cpr_day_trigger_text ?? "-"}</span>
+                                  <span className="text-muted">Inv</span><span className="text-right text-red whitespace-normal">{r.cpr_day_invalidation_text ?? "-"}</span>
+                                  <span className="text-muted">Tgt</span><span className="text-right text-green whitespace-normal">{r.cpr_day_target_text ?? "-"}</span>
+                                  <span className="text-muted">15m</span><span className={`text-right whitespace-normal ${dayVolumeColor(r.cpr_day_15m_volume_text)}`}>{r.cpr_day_15m_volume_text ?? "15m pending"}</span>
+                                </div>
+                              </div>
+                            )}
                           </div>
                         ) : <span className="text-muted/40">—</span>}
                       </td>

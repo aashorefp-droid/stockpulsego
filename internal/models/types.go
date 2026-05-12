@@ -94,6 +94,14 @@ type ScanResult struct {
 	CPRDayEntry        *float64 `json:"cpr_day_entry,omitempty"`
 	CPRDayStop         *float64 `json:"cpr_day_stop,omitempty"`
 	CPRDayT1           *float64 `json:"cpr_day_t1,omitempty"`
+	CPRDayTriggerText  string   `json:"cpr_day_trigger_text,omitempty"`
+	CPRDayInvalidText  string   `json:"cpr_day_invalidation_text,omitempty"`
+	CPRDayTargetText   string   `json:"cpr_day_target_text,omitempty"`
+	CPRDayVolumeText   string   `json:"cpr_day_volume_text,omitempty"`
+	CPRDay15mVolText   string   `json:"cpr_day_15m_volume_text,omitempty"`
+	CPRDay15mVolRatio  float64  `json:"cpr_day_15m_volume_ratio,omitempty"`
+	CPRDay15mVolSurge  bool     `json:"cpr_day_15m_volume_surge,omitempty"`
+	CPRDayRef          string   `json:"cpr_day_ref,omitempty"`
 	NextDayDate        string   `json:"next_day_date,omitempty"`
 	NextDayOutcome     string   `json:"next_day_outcome,omitempty"`
 	NextDayBias        string   `json:"next_day_bias,omitempty"`
@@ -129,6 +137,9 @@ type ScanResult struct {
 	ValuationLabel  string         `json:"valuation_label,omitempty"`
 	ValuationScore  int            `json:"valuation_score,omitempty"`
 	ValuationReason string         `json:"valuation_reason,omitempty"`
+	ValuationFair   *float64       `json:"valuation_fair_value,omitempty"`
+	ValuationUpside *float64       `json:"valuation_upside_pct,omitempty"`
+	ValuationSource string         `json:"valuation_source,omitempty"`
 	VolTrend        string         `json:"vol_trend,omitempty"`
 	VolSurge        bool           `json:"vol_surge,omitempty"`
 	BreakoutScore   int            `json:"breakout_score,omitempty"`

@@ -1,7 +1,9 @@
 package analysis
 
 import (
+	"fmt"
 	"math"
+	"sort"
 	"time"
 
 	"github.com/aashorefp-droid/stockpulsego/internal/marketdata"
@@ -20,18 +22,21 @@ func NewService(md *marketdata.Client) *Service {
 // Result is a compact analysis output. The Python version returns ~40 fields;
 // this is a working subset that the scanner uses.
 type Result struct {
-	Ticker       string      `json:"ticker"`
-	Bars         models.Bars `json:"-"`
-	CurrentPrice float64     `json:"current_price"`
-	Verdict      string      `json:"verdict"`
-	Confidence   string      `json:"confidence"`
-	Score        int         `json:"score"`
-	Direction    string      `json:"direction"`
-	WeeklyBias   string      `json:"weekly_bias"`
-	DailyBias    string      `json:"daily_bias"`
-	H4Bias       string      `json:"h4_bias"`
-	VolTrend     string      `json:"vol_trend"`
-	VolSurge     bool        `json:"vol_surge"`
+	Ticker            string      `json:"ticker"`
+	Bars              models.Bars `json:"-"`
+	CurrentPrice      float64     `json:"current_price"`
+	Verdict           string      `json:"verdict"`
+	Confidence        string      `json:"confidence"`
+	Score             int         `json:"score"`
+	Direction         string      `json:"direction"`
+	WeeklyBias        string      `json:"weekly_bias"`
+	DailyBias         string      `json:"daily_bias"`
+	H4Bias            string      `json:"h4_bias"`
+	VolTrend          string      `json:"vol_trend"`
+	VolSurge          bool        `json:"vol_surge"`
+	Opening15VolText  string      `json:"cpr_day_15m_volume_text,omitempty"`
+	Opening15VolRatio float64     `json:"cpr_day_15m_volume_ratio,omitempty"`
+	Opening15VolSurge bool        `json:"cpr_day_15m_volume_surge,omitempty"`
 	// Zones (ported from stock_pulse.py earnzone/weekzone)
 	WeekHi         float64 `json:"week_hi"`
 	WeekLo         float64 `json:"week_lo"`
@@ -296,6 +301,18 @@ func (s *Service) Analyze(ticker string, asOf *time.Time) (*Result, error) {
 	}
 	// Volume profile (last 60 daily bars, 50 buckets)
 	result.VolumeProfile = ta.ComputeVolumeProfile(highs, lows, closes, volumes, 60, 50)
+	targetDate := end.Format("2006-01-02")
+	if asOf == nil {
+		if loc, err := time.LoadLocation("America/New_York"); err == nil {
+			targetDate = end.In(loc).Format("2006-01-02")
+		}
+	}
+	if intraday, err := s.MD.GetFiveMinuteBars(ticker, end.AddDate(0, 0, -35).Format("2006-01-02"), end.Format("2006-01-02")); err == nil {
+		result.Opening15VolText, result.Opening15VolRatio, result.Opening15VolSurge = opening15VolumeSignal(intraday, targetDate)
+	}
+	if result.Opening15VolText == "" {
+		result.Opening15VolText = "15m pending: waiting for opening bars"
+	}
 
 	return result, nil
 }
@@ -477,4 +494,74 @@ func round2(v float64) float64 {
 		return 0
 	}
 	return float64(int(v*100+0.5)) / 100
+}
+
+type openingVolumeDay struct {
+	Volume float64
+	Count  int
+}
+
+func opening15VolumeSignal(bars models.Bars, targetKey string) (string, float64, bool) {
+	if len(bars) == 0 {
+		return "15m pending: waiting for opening bars", 0, false
+	}
+	loc, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		loc = time.UTC
+	}
+	byDate := map[string]*openingVolumeDay{}
+	for _, bar := range bars {
+		t := bar.Time.In(loc)
+		mins := t.Hour()*60 + t.Minute()
+		if mins < 9*60+30 || mins >= 9*60+45 {
+			continue
+		}
+		key := t.Format("2006-01-02")
+		day := byDate[key]
+		if day == nil {
+			day = &openingVolumeDay{}
+			byDate[key] = day
+		}
+		day.Volume += float64(bar.Volume)
+		day.Count++
+	}
+	targetDay := byDate[targetKey]
+	if targetDay == nil || targetDay.Volume <= 0 {
+		return "15m pending: waiting for opening bars", 0, false
+	}
+	if targetDay.Count < 3 {
+		return fmt.Sprintf("15m pending: %d/3 bars", targetDay.Count), 0, false
+	}
+	keys := make([]string, 0, len(byDate))
+	for key, day := range byDate {
+		if key < targetKey && day.Count >= 3 && day.Volume > 0 {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	if len(keys) > 10 {
+		keys = keys[len(keys)-10:]
+	}
+	if len(keys) == 0 {
+		return "15m baseline pending", 0, false
+	}
+	sum := 0.0
+	for _, key := range keys {
+		sum += byDate[key].Volume
+	}
+	avg := sum / float64(len(keys))
+	if avg <= 0 {
+		return "15m baseline pending", 0, false
+	}
+	ratio := round2(targetDay.Volume / avg)
+	switch {
+	case ratio >= 1.5:
+		return fmt.Sprintf("15m Surge %.1fx avg", ratio), ratio, true
+	case ratio >= 1.1:
+		return fmt.Sprintf("15m Active %.1fx avg", ratio), ratio, false
+	case ratio >= 0.8:
+		return fmt.Sprintf("15m Normal %.1fx avg", ratio), ratio, false
+	default:
+		return fmt.Sprintf("15m Light %.1fx avg", ratio), ratio, false
+	}
 }

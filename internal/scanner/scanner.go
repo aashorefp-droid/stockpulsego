@@ -92,38 +92,41 @@ func (s *Service) scanOne(ticker string, asOf *time.Time) models.ScanResult {
 		VolSurge:      a.VolSurge,
 		BreakoutScore: a.BreakoutScore,
 		// Zones + fib levels (ported from stock_pulse.py)
-		EarnZone:       a.EarnZone,
-		WeeklyZone:     a.WeeklyZoneCls,
-		NearFibName:    a.NearFibName,
-		NearFibPrice:   a.NearFibPrice,
-		WeekHi:         a.WeekHi,
-		WeekLo:         a.WeekLo,
-		WkPosPct:       a.WkPosPct,
-		EarnHi:         a.EarnHi,
-		EarnLo:         a.EarnLo,
-		EarnPosPct:     a.EarnPosPct,
-		FibLevels:      a.FibLevels,
-		FibCompression: a.FibCompression,
-		CPRType:        a.CPRType,
-		CPRTC:          a.CPRTC,
-		CPRBC:          a.CPRBC,
-		CPRP:           a.CPRP,
-		CPRPosition:    a.CPRPosition,
-		CPRInterp:      a.CPRInterp,
-		ExpMoveUp:      a.ExpMoveUp,
-		ExpMoveDown:    a.ExpMoveDown,
-		ExpMovePct:     a.ExpMovePct,
-		ExpMoveOpenUp:  a.ExpMoveOpenUp,
-		ExpMoveOpenDn:  a.ExpMoveOpenDn,
-		ExpMoveOpenPct: a.ExpMoveOpenPct,
-		DayOpen:        a.DayOpen,
-		DistFromHigh:   &dfh,
-		Entry:          &entry,
-		StopLoss:       &stop,
-		Target1:        &t1,
-		RiskPct:        &risk,
-		RRT1:           &rr,
-		ATR:            &atr,
+		EarnZone:          a.EarnZone,
+		WeeklyZone:        a.WeeklyZoneCls,
+		NearFibName:       a.NearFibName,
+		NearFibPrice:      a.NearFibPrice,
+		WeekHi:            a.WeekHi,
+		WeekLo:            a.WeekLo,
+		WkPosPct:          a.WkPosPct,
+		EarnHi:            a.EarnHi,
+		EarnLo:            a.EarnLo,
+		EarnPosPct:        a.EarnPosPct,
+		FibLevels:         a.FibLevels,
+		FibCompression:    a.FibCompression,
+		CPRType:           a.CPRType,
+		CPRTC:             a.CPRTC,
+		CPRBC:             a.CPRBC,
+		CPRP:              a.CPRP,
+		CPRPosition:       a.CPRPosition,
+		CPRInterp:         a.CPRInterp,
+		CPRDay15mVolText:  a.Opening15VolText,
+		CPRDay15mVolRatio: a.Opening15VolRatio,
+		CPRDay15mVolSurge: a.Opening15VolSurge,
+		ExpMoveUp:         a.ExpMoveUp,
+		ExpMoveDown:       a.ExpMoveDown,
+		ExpMovePct:        a.ExpMovePct,
+		ExpMoveOpenUp:     a.ExpMoveOpenUp,
+		ExpMoveOpenDn:     a.ExpMoveOpenDn,
+		ExpMoveOpenPct:    a.ExpMoveOpenPct,
+		DayOpen:           a.DayOpen,
+		DistFromHigh:      &dfh,
+		Entry:             &entry,
+		StopLoss:          &stop,
+		Target1:           &t1,
+		RiskPct:           &risk,
+		RRT1:              &rr,
+		ATR:               &atr,
 	}
 	attachCPRDay(&res, a)
 	attachNextDay(&res, a)
@@ -137,10 +140,13 @@ func (s *Service) scanOne(ticker string, asOf *time.Time) models.ScanResult {
 			}
 			res.Signals = strings.Join(labels, " | ")
 			res.Sector = sectorForTicker(ticker, f)
-			label, score, reason := valuationEstimate(f, a.CurrentPrice)
+			label, score, reason, fairValue, upsidePct, source := valuationEstimate(f, a.CurrentPrice)
 			res.ValuationLabel = label
 			res.ValuationScore = score
 			res.ValuationReason = reason
+			res.ValuationFair = fairValue
+			res.ValuationUpside = upsidePct
+			res.ValuationSource = source
 			// Yahoo returns short_pct_of_float as a fraction (e.g., 0.054 = 5.4%)
 			if f.ShortPctOfFloat != nil {
 				// round to 1 decimal to avoid float-precision noise like 0.91999999%
@@ -218,9 +224,9 @@ func sectorForTicker(ticker string, f *fundamentals.Fundamentals) string {
 	return "Unknown"
 }
 
-func valuationEstimate(f *fundamentals.Fundamentals, fallbackPrice float64) (string, int, string) {
+func valuationEstimate(f *fundamentals.Fundamentals, fallbackPrice float64) (string, int, string, *float64, *float64, string) {
 	if f == nil {
-		return "", 0, ""
+		return "", 0, "", nil, nil, ""
 	}
 	score := 0
 	reasons := []string{}
@@ -320,13 +326,100 @@ func valuationEstimate(f *fundamentals.Fundamentals, fallbackPrice float64) (str
 	default:
 		label = "Overvalued"
 	}
+
+	fairValue, upsidePct, source := valuationFairValue(f, price, pe, score)
 	if len(reasons) == 0 {
-		return label, score, "Insufficient valuation fundamentals"
+		return label, score, "Insufficient valuation fundamentals", fairValue, upsidePct, source
 	}
 	if len(reasons) > 7 {
 		reasons = reasons[:7]
 	}
-	return label, score, strings.Join(reasons, " | ")
+	return label, score, strings.Join(reasons, " | "), fairValue, upsidePct, source
+}
+
+type valuationCandidate struct {
+	value  float64
+	weight float64
+	source string
+}
+
+func valuationFairValue(f *fundamentals.Fundamentals, price float64, pe *float64, score int) (*float64, *float64, string) {
+	candidates := make([]valuationCandidate, 0, 2)
+	if f.TargetPrice != nil && *f.TargetPrice > 0 {
+		candidates = append(candidates, valuationCandidate{value: *f.TargetPrice, weight: 0.60, source: "Analyst target"})
+	}
+	if price > 0 && pe != nil && *pe > 0 {
+		impliedEPS := price / *pe
+		fairPE := valuationTargetPE(f)
+		peValue := impliedEPS * fairPE
+		if peValue > 0 {
+			candidates = append(candidates, valuationCandidate{value: peValue, weight: 0.40, source: fmt.Sprintf("P/E fair value (%.0fx)", fairPE)})
+		}
+	}
+	if len(candidates) == 0 && price > 0 {
+		impliedPct := math.Max(-0.30, math.Min(0.30, float64(score)*0.06))
+		candidates = append(candidates, valuationCandidate{value: price * (1 + impliedPct), weight: 1.0, source: "Score-implied fair value"})
+	}
+	if len(candidates) == 0 {
+		return nil, nil, ""
+	}
+	totalWeight := 0.0
+	totalValue := 0.0
+	sources := make([]string, 0, len(candidates))
+	for _, c := range candidates {
+		totalWeight += c.weight
+		totalValue += c.value * c.weight
+		sources = append(sources, c.source)
+	}
+	if totalWeight <= 0 {
+		return nil, nil, ""
+	}
+	fair := round2(totalValue / totalWeight)
+	var upsidePtr *float64
+	if price > 0 {
+		upside := round2((fair - price) / price * 100)
+		upsidePtr = &upside
+	}
+	source := strings.Join(sources, " + ")
+	return &fair, upsidePtr, source
+}
+
+func valuationTargetPE(f *fundamentals.Fundamentals) float64 {
+	multiple := 18.0
+	if f.EarningsGrowth != nil {
+		switch {
+		case *f.EarningsGrowth >= 0.20:
+			multiple = 28.0
+		case *f.EarningsGrowth >= 0.10:
+			multiple = 24.0
+		case *f.EarningsGrowth >= 0.05:
+			multiple = 21.0
+		case *f.EarningsGrowth < 0:
+			multiple = 12.0
+		}
+	}
+	if f.ProfitMargin != nil {
+		marginPct := *f.ProfitMargin * 100
+		switch {
+		case marginPct >= 25:
+			multiple += 2
+		case marginPct < 0:
+			multiple -= 4
+		case marginPct < 5:
+			multiple -= 2
+		}
+	}
+	if f.DebtToEquity != nil {
+		switch {
+		case *f.DebtToEquity <= 50:
+			multiple += 1
+		case *f.DebtToEquity >= 250:
+			multiple -= 3
+		case *f.DebtToEquity >= 150:
+			multiple -= 1.5
+		}
+	}
+	return math.Max(8, math.Min(35, multiple))
 }
 
 func moneyShort(v float64) string {
@@ -355,6 +448,22 @@ func attachCPRDay(res *models.ScanResult, a *analysis.Result) {
 	}
 	entry := round2(a.CurrentPrice)
 	stop := round2(a.CPRP)
+	openContext := fmt.Sprintf("Open inside CPR ($%.2f-$%.2f)", res.CPRBC, res.CPRTC)
+	if a.DayOpen > 0 && a.DayOpen > res.CPRTC {
+		openContext = fmt.Sprintf("Open above TC ($%.2f)", res.CPRTC)
+	} else if a.DayOpen > 0 && a.DayOpen < res.CPRBC {
+		openContext = fmt.Sprintf("Open below BC ($%.2f)", res.CPRBC)
+	}
+	// REVERT_DAY_TRIGGER_V2: additive trigger text; legacy CPR Entry/Stop/T1 stay unchanged.
+	res.CPRDayTriggerText = fmt.Sprintf("Break TC $%.2f / BC $%.2f", res.CPRTC, res.CPRBC)
+	res.CPRDayInvalidText = "Failed break back inside CPR"
+	res.CPRDayTargetText = fmt.Sprintf("Breakout side + $%.2f", a.ATR*0.5)
+	volRatio := 0.0
+	if a.VolumeProfile != nil {
+		volRatio = a.VolumeProfile.VolRatio
+	}
+	res.CPRDayVolumeText = dayVolumeConfirmText(res.CPRPosition, res.VolTrend, res.VolSurge, volRatio)
+	res.CPRDayRef = openContext + "; wait for TC/BC break."
 	var t1 float64
 	switch res.CPRPosition {
 	case "Above":
@@ -369,6 +478,13 @@ func attachCPRDay(res *models.ScanResult, a *analysis.Result) {
 		if t1 <= a.CurrentPrice {
 			t1 = a.CurrentPrice + a.ATR*0.5
 		}
+		if a.DayOpen >= res.CPRTC {
+			res.CPRDayTriggerText = fmt.Sprintf("Hold > TC $%.2f", res.CPRTC)
+		} else {
+			res.CPRDayTriggerText = fmt.Sprintf("Reclaim TC $%.2f", res.CPRTC)
+		}
+		res.CPRDayInvalidText = fmt.Sprintf("Back < P $%.2f", res.CPRP)
+		res.CPRDayRef = openContext + "; long only while holding above TC/P."
 	case "Below":
 		if res.CPRType == "Narrow" {
 			res.CPRDayResult = "Trend down"
@@ -381,14 +497,63 @@ func attachCPRDay(res *models.ScanResult, a *analysis.Result) {
 		if t1 >= a.CurrentPrice {
 			t1 = a.CurrentPrice - a.ATR*0.5
 		}
+		if a.DayOpen <= res.CPRBC {
+			res.CPRDayTriggerText = fmt.Sprintf("Hold < BC $%.2f", res.CPRBC)
+		} else {
+			res.CPRDayTriggerText = fmt.Sprintf("Lose BC $%.2f", res.CPRBC)
+		}
+		res.CPRDayInvalidText = fmt.Sprintf("Back > P $%.2f", res.CPRP)
+		res.CPRDayRef = openContext + "; short only while staying below BC/P."
 	default:
 		res.CPRDayResult = "Inside CPR; wait"
 		return
 	}
 	t1 = round2(t1)
+	res.CPRDayTargetText = fmt.Sprintf("$%.2f", t1)
 	res.CPRDayEntry = &entry
 	res.CPRDayStop = &stop
 	res.CPRDayT1 = &t1
+}
+
+func dayVolumeConfirmText(position, trend string, surge bool, ratio float64) string {
+	trend = strings.ToUpper(strings.TrimSpace(trend))
+	ratioText := ""
+	if ratio > 0 {
+		ratioText = fmt.Sprintf(" (%.1fx avg)", ratio)
+	}
+	switch position {
+	case "Above":
+		switch {
+		case trend == "ACCUMULATING" && surge:
+			return "Confirmed: accumulating + volume surge" + ratioText
+		case trend == "ACCUMULATING":
+			return "Supportive: accumulating volume" + ratioText
+		case trend == "DISTRIBUTING":
+			return "Caution: distribution against long" + ratioText
+		case surge:
+			return "Watch: volume surge; confirm direction" + ratioText
+		default:
+			return "Needs volume: no clear accumulation"
+		}
+	case "Below":
+		switch {
+		case trend == "DISTRIBUTING" && surge:
+			return "Confirmed: distributing + volume surge" + ratioText
+		case trend == "DISTRIBUTING":
+			return "Supportive: distributing volume" + ratioText
+		case trend == "ACCUMULATING":
+			return "Caution: accumulation against short" + ratioText
+		case surge:
+			return "Watch: volume surge; confirm direction" + ratioText
+		default:
+			return "Needs volume: no clear distribution"
+		}
+	default:
+		if surge {
+			return "Watch: volume surge; wait for CPR break" + ratioText
+		}
+		return "Needs volume on CPR break"
+	}
 }
 
 func attachNextDay(res *models.ScanResult, a *analysis.Result) {

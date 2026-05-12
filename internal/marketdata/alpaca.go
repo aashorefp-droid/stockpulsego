@@ -130,6 +130,11 @@ func (c *Client) GetHourlyBars(ticker, start, end string) (models.Bars, error) {
 	return c.fetchBars(ticker, "1Hour", start, end)
 }
 
+// GetFiveMinuteBars fetches 5-minute OHLCV bars for opening-volume checks.
+func (c *Client) GetFiveMinuteBars(ticker, start, end string) (models.Bars, error) {
+	return c.fetchBars(ticker, "5Min", start, end)
+}
+
 func (c *Client) fetchBars(ticker, timeframe, start, end string) (models.Bars, error) {
 	var all []alpacaBar
 	pageToken := ""
