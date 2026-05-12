@@ -22,21 +22,27 @@ func NewService(md *marketdata.Client) *Service {
 // Result is a compact analysis output. The Python version returns ~40 fields;
 // this is a working subset that the scanner uses.
 type Result struct {
-	Ticker            string      `json:"ticker"`
-	Bars              models.Bars `json:"-"`
-	CurrentPrice      float64     `json:"current_price"`
-	Verdict           string      `json:"verdict"`
-	Confidence        string      `json:"confidence"`
-	Score             int         `json:"score"`
-	Direction         string      `json:"direction"`
-	WeeklyBias        string      `json:"weekly_bias"`
-	DailyBias         string      `json:"daily_bias"`
-	H4Bias            string      `json:"h4_bias"`
-	VolTrend          string      `json:"vol_trend"`
-	VolSurge          bool        `json:"vol_surge"`
-	Opening15VolText  string      `json:"cpr_day_15m_volume_text,omitempty"`
-	Opening15VolRatio float64     `json:"cpr_day_15m_volume_ratio,omitempty"`
-	Opening15VolSurge bool        `json:"cpr_day_15m_volume_surge,omitempty"`
+	Ticker             string      `json:"ticker"`
+	Bars               models.Bars `json:"-"`
+	CurrentPrice       float64     `json:"current_price"`
+	Verdict            string      `json:"verdict"`
+	Confidence         string      `json:"confidence"`
+	Score              int         `json:"score"`
+	Direction          string      `json:"direction"`
+	WeeklyBias         string      `json:"weekly_bias"`
+	DailyBias          string      `json:"daily_bias"`
+	H4Bias             string      `json:"h4_bias"`
+	LongTermSpring     bool        `json:"long_term_spring,omitempty"`
+	LongTermSpringText string      `json:"long_term_spring_text,omitempty"`
+	SwingSpring        bool        `json:"swing_spring,omitempty"`
+	SwingSpringText    string      `json:"swing_spring_text,omitempty"`
+	DaySpring          bool        `json:"day_spring,omitempty"`
+	DaySpringText      string      `json:"day_spring_text,omitempty"`
+	VolTrend           string      `json:"vol_trend"`
+	VolSurge           bool        `json:"vol_surge"`
+	Opening15VolText   string      `json:"cpr_day_15m_volume_text,omitempty"`
+	Opening15VolRatio  float64     `json:"cpr_day_15m_volume_ratio,omitempty"`
+	Opening15VolSurge  bool        `json:"cpr_day_15m_volume_surge,omitempty"`
 	// Zones (ported from stock_pulse.py earnzone/weekzone)
 	WeekHi         float64 `json:"week_hi"`
 	WeekLo         float64 `json:"week_lo"`
@@ -151,6 +157,8 @@ func (s *Service) Analyze(ticker string, asOf *time.Time) (*Result, error) {
 		wkPos = (last - weekLo) / weekRange * 100
 	}
 	weeklyZoneCls := classifyZonePct(wkPos)
+	weeklySpring, weeklySpringText := springAction(aggregateWeeks(bars), 20, "Weekly")
+	dailySpring, dailySpringText := springAction(bars, 20, "Daily")
 
 	// Nearest fib name + price
 	var nearFibPrice float64
@@ -231,49 +239,53 @@ func (s *Service) Analyze(ticker string, asOf *time.Time) (*Result, error) {
 	rr2 := math.Abs(t2-entry) / math.Abs(entry-stop)
 
 	result := &Result{
-		Ticker:         ticker,
-		Bars:           bars,
-		CurrentPrice:   round2(last),
-		Verdict:        verdict,
-		Confidence:     confidence,
-		Score:          score,
-		Direction:      direction,
-		WeeklyBias:     weeklyBias,
-		DailyBias:      dailyBias,
-		H4Bias:         h4Bias,
-		VolTrend:       volTrend,
-		VolSurge:       volSurge,
-		WeekHi:         round2(weekHi),
-		WeekLo:         round2(weekLo),
-		WkPosPct:       round2(wkPos),
-		WeeklyZoneCls:  weeklyZoneCls,
-		EarnHi:         round2(swingHigh),
-		EarnLo:         round2(swingLow),
-		EarnPosPct:     round2(earnPos),
-		EarnZone:       earnZoneCls,
-		NearFibName:    nearest,
-		NearFibPrice:   round2(nearFibPrice),
-		FibCompression: fibCompression,
-		NearestFib:     nearest,
-		FibLevels:      fibs,
-		Support:        support,
-		Resistance:     resistance,
-		RSI4H:          round2(rsiLast),
-		WeeklyFibZone:  weeklyFib,
-		BreakoutScore:  breakoutScore,
-		DistFromHigh:   round2(distFromHigh),
-		IsUptrend:      isUptrend,
-		IsDowntrend:    isDowntrend,
-		MA10BelowMA30:  ma10BelowMA30,
-		PricePos52W:    round2(pricePos),
-		Entry:          round2(entry),
-		StopLoss:       round2(stop),
-		Target1:        round2(t1),
-		Target2:        round2(t2),
-		RiskPct:        round2(risk),
-		RRT1:           round2(rr1),
-		RRT2:           round2(rr2),
-		ATR:            round2(atrLast),
+		Ticker:             ticker,
+		Bars:               bars,
+		CurrentPrice:       round2(last),
+		Verdict:            verdict,
+		Confidence:         confidence,
+		Score:              score,
+		Direction:          direction,
+		WeeklyBias:         weeklyBias,
+		DailyBias:          dailyBias,
+		H4Bias:             h4Bias,
+		LongTermSpring:     weeklySpring,
+		LongTermSpringText: weeklySpringText,
+		SwingSpring:        dailySpring,
+		SwingSpringText:    dailySpringText,
+		VolTrend:           volTrend,
+		VolSurge:           volSurge,
+		WeekHi:             round2(weekHi),
+		WeekLo:             round2(weekLo),
+		WkPosPct:           round2(wkPos),
+		WeeklyZoneCls:      weeklyZoneCls,
+		EarnHi:             round2(swingHigh),
+		EarnLo:             round2(swingLow),
+		EarnPosPct:         round2(earnPos),
+		EarnZone:           earnZoneCls,
+		NearFibName:        nearest,
+		NearFibPrice:       round2(nearFibPrice),
+		FibCompression:     fibCompression,
+		NearestFib:         nearest,
+		FibLevels:          fibs,
+		Support:            support,
+		Resistance:         resistance,
+		RSI4H:              round2(rsiLast),
+		WeeklyFibZone:      weeklyFib,
+		BreakoutScore:      breakoutScore,
+		DistFromHigh:       round2(distFromHigh),
+		IsUptrend:          isUptrend,
+		IsDowntrend:        isDowntrend,
+		MA10BelowMA30:      ma10BelowMA30,
+		PricePos52W:        round2(pricePos),
+		Entry:              round2(entry),
+		StopLoss:           round2(stop),
+		Target1:            round2(t1),
+		Target2:            round2(t2),
+		RiskPct:            round2(risk),
+		RRT1:               round2(rr1),
+		RRT2:               round2(rr2),
+		ATR:                round2(atrLast),
 	}
 	if cprResult != nil {
 		result.CPRType = cprResult.Type
@@ -309,12 +321,147 @@ func (s *Service) Analyze(ticker string, asOf *time.Time) (*Result, error) {
 	}
 	if intraday, err := s.MD.GetFiveMinuteBars(ticker, end.AddDate(0, 0, -35).Format("2006-01-02"), end.Format("2006-01-02")); err == nil {
 		result.Opening15VolText, result.Opening15VolRatio, result.Opening15VolSurge = opening15VolumeSignal(intraday, targetDate)
+		result.DaySpring, result.DaySpringText = springAction(aggregateFourHour(intraday), 12, "4H")
 	}
 	if result.Opening15VolText == "" {
 		result.Opening15VolText = "15m pending: waiting for opening bars"
 	}
 
 	return result, nil
+}
+
+func aggregateWeeks(bars models.Bars) models.Bars {
+	if len(bars) == 0 {
+		return nil
+	}
+	loc, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		loc = time.UTC
+	}
+	var out models.Bars
+	var cur models.Bar
+	curKey := ""
+	for _, bar := range bars {
+		t := bar.Time.In(loc)
+		year, week := t.ISOWeek()
+		key := fmt.Sprintf("%04d-%02d", year, week)
+		if curKey == "" {
+			curKey = key
+			cur = bar
+			continue
+		}
+		if key != curKey {
+			out = append(out, cur)
+			curKey = key
+			cur = bar
+			continue
+		}
+		cur = mergeBar(cur, bar)
+	}
+	out = append(out, cur)
+	return out
+}
+
+func aggregateFourHour(bars models.Bars) models.Bars {
+	if len(bars) == 0 {
+		return nil
+	}
+	loc, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		loc = time.UTC
+	}
+	var out models.Bars
+	var cur models.Bar
+	curKey := ""
+	for _, bar := range bars {
+		t := bar.Time.In(loc)
+		mins := t.Hour()*60 + t.Minute()
+		if mins < 9*60+30 || mins >= 16*60 {
+			continue
+		}
+		bucket := (mins - (9*60 + 30)) / 240
+		key := fmt.Sprintf("%s-%d", t.Format("2006-01-02"), bucket)
+		if curKey == "" {
+			curKey = key
+			cur = bar
+			continue
+		}
+		if key != curKey {
+			out = append(out, cur)
+			curKey = key
+			cur = bar
+			continue
+		}
+		cur = mergeBar(cur, bar)
+	}
+	if curKey != "" {
+		out = append(out, cur)
+	}
+	return out
+}
+
+func mergeBar(a, b models.Bar) models.Bar {
+	if b.High > a.High {
+		a.High = b.High
+	}
+	if b.Low < a.Low {
+		a.Low = b.Low
+	}
+	a.Close = b.Close
+	a.Volume += b.Volume
+	a.Time = b.Time
+	return a
+}
+
+func springAction(bars models.Bars, lookback int, timeframe string) (bool, string) {
+	if lookback < 5 {
+		lookback = 5
+	}
+	if len(bars) < lookback+2 {
+		return false, ""
+	}
+	last := bars[len(bars)-1]
+	if last.Close <= 0 || last.High <= last.Low {
+		return false, ""
+	}
+	start := len(bars) - 1 - lookback
+	if start < 0 {
+		start = 0
+	}
+	support := math.MaxFloat64
+	volSum := 0.0
+	volCount := 0
+	for i := start; i < len(bars)-1; i++ {
+		if bars[i].Low > 0 && bars[i].Low < support {
+			support = bars[i].Low
+		}
+		if bars[i].Volume > 0 {
+			volSum += float64(bars[i].Volume)
+			volCount++
+		}
+	}
+	if support == math.MaxFloat64 || support <= 0 {
+		return false, ""
+	}
+	closePos := (last.Close - last.Low) / (last.High - last.Low)
+	testedSupport := last.Low <= support*1.01
+	reclaimedSupport := last.Close > support
+	greenClose := last.Close >= last.Open
+	if !(testedSupport && reclaimedSupport && greenClose && closePos >= 0.55) {
+		return false, ""
+	}
+	volRatio := 0.0
+	if volCount > 0 && volSum > 0 {
+		volRatio = float64(last.Volume) / (volSum / float64(volCount))
+		if volRatio < 0.65 {
+			return false, ""
+		}
+	}
+	text := fmt.Sprintf("%s spring: tested/reclaimed $%.2f support; close %.0f%% of range", timeframe, support, closePos*100)
+	if volRatio > 0 {
+		text += fmt.Sprintf("; volume %.1fx avg", volRatio)
+	}
+	return true, text
 }
 
 // classifyZonePct returns HIGH/MID/LOW based on % position within a swing range.

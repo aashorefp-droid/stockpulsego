@@ -71,6 +71,12 @@ interface ScanResult {
   mtf_key?:      string;
   weekly_bias?:  string;
   daily_bias?:   string;
+  long_term_spring?: boolean;
+  long_term_spring_text?: string;
+  swing_spring?: boolean;
+  swing_spring_text?: string;
+  day_spring?: boolean;
+  day_spring_text?: string;
   vol_trend?:    string;
   earn_zone?:    string;
   weekly_zone?:  string;
@@ -183,6 +189,18 @@ const gradeColor: Record<string, string> = {
 
 function Badge({ text, color }: { text: string; color: string }) {
   return <span className={`text-[10px] font-mono font-semibold px-1.5 py-0.5 rounded border ${color}`}>{text}</span>;
+}
+
+function SpringMarker({ title }: { title?: string }) {
+  return (
+    <span
+      className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-green/40 bg-green/10 text-[10px] leading-none text-green cursor-help"
+      title={title || "Spring action"}
+      aria-label={title || "Spring action"}
+    >
+      {"\u{1F331}"}
+    </span>
+  );
 }
 
 function fundamentalStyle(signal: string) {
@@ -304,6 +322,33 @@ function dayVolumeColor(value?: string): string {
   return "text-yellow";
 }
 
+function hasPending15mVolume(r: ScanResult): boolean {
+  const text = (r.cpr_day_15m_volume_text ?? "").toLowerCase();
+  return !!r.ticker && !!r.cpr_day_result && (!text || text.startsWith("15m pending"));
+}
+
+function inOpeningVolumeRefreshWindow(): boolean {
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: "America/New_York",
+      weekday: "short",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }).formatToParts(new Date());
+    const get = (type: string) => parts.find(p => p.type === type)?.value ?? "";
+    const weekday = get("weekday");
+    if (weekday === "Sat" || weekday === "Sun") return false;
+    const hour = Number(get("hour")) % 24;
+    const minute = Number(get("minute"));
+    if (!Number.isFinite(hour) || !Number.isFinite(minute)) return false;
+    const mins = hour * 60 + minute;
+    return mins >= 9 * 60 + 30 && mins <= 10 * 60 + 30;
+  } catch {
+    return false;
+  }
+}
+
 function lreRangeText(r: ScanResult): string {
   if (r.lre_entry == null || r.lre_stop == null) return "—";
   const lo = Math.min(r.lre_entry, r.lre_stop);
@@ -382,7 +427,17 @@ export default function ScannerPage() {
   const [backtestDate, setBacktestDate] = useState("");
   const [activeBacktestDate, setActiveBacktestDate] = useState<string | null>(null);
   const [sectorMacro,  setSectorMacro]  = useState<Record<string, MacroItem>>({});
+  const [auto15mStatus, setAuto15mStatus] = useState("");
+  const [telegramStatus, setTelegramStatus] = useState("");
+  const [telegramSending, setTelegramSending] = useState(false);
   const esRef = useRef<EventSource | null>(null);
+  const refresh15mRef = useRef<EventSource | null>(null);
+  const refresh15mBusyRef = useRef(false);
+  const pending15mKey = results
+    .filter(hasPending15mVolume)
+    .map(r => r.ticker.toUpperCase())
+    .sort()
+    .join(",");
 
   useEffect(() => {
     if (!optModal) return;
@@ -390,6 +445,10 @@ export default function ScannerPage() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [optModal]);
+
+  useEffect(() => {
+    return () => refresh15mRef.current?.close();
+  }, []);
 
   useEffect(() => {
     let alive = true;
@@ -406,6 +465,62 @@ export default function ScannerPage() {
       .catch(() => {});
     return () => { alive = false; };
   }, []);
+
+  useEffect(() => {
+    if (mode !== "live" || scanning || progress.total === 0 || progress.done < progress.total || !pending15mKey || !inOpeningVolumeRefreshWindow()) {
+      return;
+    }
+
+    const refreshPending = () => {
+      if (refresh15mBusyRef.current || !inOpeningVolumeRefreshWindow()) return;
+      const tickers = Array.from(new Set(
+        results
+          .filter(hasPending15mVolume)
+          .map(r => r.ticker.toUpperCase())
+      )).slice(0, 80);
+      if (!tickers.length) return;
+
+      refresh15mBusyRef.current = true;
+      setAuto15mStatus(`Auto-updating 15m volume (${tickers.length})`);
+      refresh15mRef.current?.close();
+
+      const es = new EventSource(`${API_BASE}/api/scanner/stream?tickers=${encodeURIComponent(tickers.join(","))}`);
+      refresh15mRef.current = es;
+
+      es.onmessage = (e) => {
+        const data: ScanResult = JSON.parse(e.data);
+        if (data.done) {
+          refresh15mBusyRef.current = false;
+          setAuto15mStatus("15m volume refreshed");
+          window.setTimeout(() => setAuto15mStatus(""), 2500);
+          es.close();
+          return;
+        }
+        if (!data.ticker) return;
+        if (data.error) return;
+        setResults(prev => {
+          const idx = prev.findIndex(r => r.ticker.toUpperCase() === data.ticker!.toUpperCase());
+          if (idx < 0) return prev;
+          const next = [...prev];
+          next[idx] = { ...prev[idx], ...data };
+          return next;
+        });
+      };
+
+      es.onerror = () => {
+        refresh15mBusyRef.current = false;
+        setAuto15mStatus("15m auto-update waiting");
+        es.close();
+      };
+    };
+
+    const first = window.setTimeout(refreshPending, 60_000);
+    const every = window.setInterval(refreshPending, 90_000);
+    return () => {
+      window.clearTimeout(first);
+      window.clearInterval(every);
+    };
+  }, [mode, scanning, progress.done, progress.total, pending15mKey, results]);
 
   function copyText(text: string) {
     navigator.clipboard.writeText(text).catch(() => {});
@@ -464,6 +579,9 @@ export default function ScannerPage() {
 
   function startScan(scanWatchlist: string = watchlist) {
     if (esRef.current) esRef.current.close();
+    if (refresh15mRef.current) refresh15mRef.current.close();
+    refresh15mBusyRef.current = false;
+    setAuto15mStatus("");
     setSnapshotStatus("");
     setScannerCollapsed(false);
     if (scanWatchlist === "custom" && watchlist !== "custom") {
@@ -526,6 +644,22 @@ export default function ScannerPage() {
   function stopScan() {
     esRef.current?.close();
     setScanning(false);
+  }
+
+  async function sendTelegramAlert() {
+    setTelegramSending(true);
+    setTelegramStatus("Sending Telegram...");
+    try {
+      const res = await fetch(`${API_BASE}/api/telegram/test`, { method: "POST" });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json?.error || `HTTP ${res.status}`);
+      setTelegramStatus(json?.message || "Telegram alert sent");
+      window.setTimeout(() => setTelegramStatus(""), 4000);
+    } catch (e: any) {
+      setTelegramStatus(`Telegram failed: ${e?.message ?? e}`);
+    } finally {
+      setTelegramSending(false);
+    }
   }
 
   const gradeRank: Record<string, number> = { S: 0, A: 1, B: 2, "B-": 3, C: 4, D: 5 };
@@ -638,7 +772,20 @@ export default function ScannerPage() {
           >
             {scanning ? "⏹ STOP" : mode === "backtest" ? "⏪ BACKTEST" : "▶ SCAN"}
           </button>
-          {(scanning || results.length > 0 || snapshotStatus) && (
+          <button
+            type="button"
+            onClick={sendTelegramAlert}
+            disabled={telegramSending}
+            className={`shrink-0 rounded-lg border px-3 py-1.5 text-xs font-bold uppercase transition-colors ${
+              telegramSending
+                ? "border-yellow/30 bg-yellow/10 text-yellow cursor-wait"
+                : "border-border bg-surface text-muted hover:border-yellow/40 hover:text-yellow"
+            }`}
+            title="Send a Telegram test alert using the backend Telegram configuration"
+          >
+            {telegramSending ? "TG..." : "TG Alert"}
+          </button>
+          {(scanning || results.length > 0 || snapshotStatus || telegramStatus) && (
             <div className="shrink-0 min-w-[230px] max-w-[280px]">
               <div className="mb-1 flex items-center justify-between gap-3 text-[11px] text-muted">
                 <span>{progress.done} / {progress.total} scanned</span>
@@ -653,6 +800,12 @@ export default function ScannerPage() {
                   <span>{filtered.length} shown · {errors.length} errors</span>
                 )}
                 {snapshotStatus && <span className="text-accent">{snapshotStatus}</span>}
+                {auto15mStatus && <span className="text-yellow">{auto15mStatus}</span>}
+                {telegramStatus && (
+                  <span className={telegramStatus.startsWith("Telegram failed") ? "text-red" : "text-green"}>
+                    {telegramStatus}
+                  </span>
+                )}
               </div>
             </div>
           )}
@@ -950,9 +1103,9 @@ export default function ScannerPage() {
               [
                 "Ticker","Sector","Price","Verdict","Long Term Grade","Long Term Status",
                 "Verdict Flip Date","Verdict Flip From","Days Since Flip",
-                "Long Term Entry Range","Long Term % From Entry","Long Term Risk%","Valuation","Valuation Fair Value","Valuation Upside%","Valuation Source","Valuation Reason",
-                "Swing Entry","Swing Stop","Swing T1","Swing Reward%","Swing Risk%","Swing R/R",
-                "Day Trading Result","Day Trading Entry","Day Trading Stop","Day Trading T1","Day Trading Reward%","Day Trading Trigger","Day Trading Invalidation","Day Trading Target Plan","Day Trading Volume Confirm","Day Trading 15m Volume Confirm","Day Trading Ref",
+                "Long Term Entry Range","Long Term % From Entry","Long Term Risk%","Long Term Spring","Valuation","Valuation Fair Value","Valuation Upside%","Valuation Source","Valuation Reason",
+                "Swing Entry","Swing Stop","Swing T1","Swing Reward%","Swing Risk%","Swing R/R","Swing Spring",
+                "Day Trading Result","Day Trading Entry","Day Trading Stop","Day Trading T1","Day Trading Reward%","Day Trading Spring","Day Trading Trigger","Day Trading Invalidation","Day Trading Target Plan","Day Trading Volume Confirm","Day Trading 15m Volume Confirm","Day Trading Ref",
                 "Next Day Date","Next Day Outcome","Next Day Bias","Next Day Summary","Next Day ATR","Next Day ATR%","Next Day Up Trigger","Next Day Down Trigger","Next Day Pivot","Next Day Target",
                 "Short%","Options Strategy","Options Summary","Fundamental","CPR Text",
               ],
@@ -963,10 +1116,10 @@ export default function ScannerPage() {
                 return [
                   r.ticker, r.sector, r.price, r.verdict, r.lre_label, r.lre_status,
                   r.verdict_flip_date, r.verdict_flip_from, r.verdict_flip_days,
-                  lreRangeText(r), lreFromEntry, r.lre_risk_pct, r.valuation_label, valuationFairValue(r), valuationUpsidePct(r), r.valuation_source, r.valuation_reason,
-                  r.entry, r.stop_loss, r.target1, rewardPct(r.entry, r.target1), r.risk_pct, r.rr_t1,
+                  lreRangeText(r), lreFromEntry, r.lre_risk_pct, r.long_term_spring_text, r.valuation_label, valuationFairValue(r), valuationUpsidePct(r), r.valuation_source, r.valuation_reason,
+                  r.entry, r.stop_loss, r.target1, rewardPct(r.entry, r.target1), r.risk_pct, r.rr_t1, r.swing_spring_text,
                   r.cpr_day_result, r.cpr_day_entry, r.cpr_day_stop, r.cpr_day_t1, rewardPct(r.cpr_day_entry, r.cpr_day_t1),
-                  r.cpr_day_trigger_text, r.cpr_day_invalidation_text, r.cpr_day_target_text, r.cpr_day_volume_text, r.cpr_day_15m_volume_text, r.cpr_day_ref,
+                  r.day_spring_text, r.cpr_day_trigger_text, r.cpr_day_invalidation_text, r.cpr_day_target_text, r.cpr_day_volume_text, r.cpr_day_15m_volume_text, r.cpr_day_ref,
                   r.next_day_date, r.next_day_outcome, r.next_day_bias, r.next_day_summary ?? r.next_day_prediction,
                   r.next_day_atr, r.next_day_atr_pct, r.next_day_trigger_up, r.next_day_trigger_down,
                   r.next_day_pivot, r.next_day_target,
@@ -995,9 +1148,15 @@ export default function ScannerPage() {
                   <th className="w-[88px] min-w-[88px] max-w-[88px] text-center px-2 py-3">Sector</th>
                   <th className="text-right px-3 py-3 whitespace-nowrap">Price</th>
                   <th className="text-center px-3 py-3 whitespace-nowrap">Verdict</th>
-                  <th className="text-center px-3 py-3 whitespace-nowrap" title="Low Risk Entry score">Long Term</th>
-                  <th className="text-left px-2 py-3 whitespace-nowrap border-l border-border/60 text-accent">SWING</th>
-                  <th className="text-left px-2 py-3 whitespace-nowrap border-l border-border/60 text-yellow">Day Trading</th>
+                  <th className="text-center px-3 py-3 whitespace-nowrap" title="Long Term scans weekly bars for spring action. A green sprout appears in rows when detected.">
+                    Long Term <span className="text-green/60">{"\u{1F331}"}</span>
+                  </th>
+                  <th className="text-left px-2 py-3 whitespace-nowrap border-l border-border/60 text-accent" title="Swing scans daily bars for spring action. A green sprout appears in rows when detected.">
+                    SWING <span className="text-green/60">{"\u{1F331}"}</span>
+                  </th>
+                  <th className="text-left px-2 py-3 whitespace-nowrap border-l border-border/60 text-yellow" title="Day Trading scans 4H bars for spring action. A green sprout appears in rows when detected.">
+                    Day Trading <span className="text-green/60">{"\u{1F331}"}</span>
+                  </th>
                   <th className="text-left px-2 py-3 whitespace-nowrap border-l border-border/60 text-muted" title="Prediction only. Use with caution and confirm with price action.">
                     <span className="block leading-tight">
                       <span className="block">Next Day</span>
@@ -1141,6 +1300,12 @@ export default function ScannerPage() {
                         </div>
                       </td>
                       <td className="px-3 py-2.5 text-center whitespace-nowrap" title={r.lre_reason ?? ""}>
+                        {r.long_term_spring && (
+                          <div className="mb-1 inline-flex items-center justify-center gap-1 text-[10px] font-mono text-green">
+                            <SpringMarker title={r.long_term_spring_text} />
+                            Weekly spring
+                          </div>
+                        )}
                         {r.lre_score && r.lre_score > 0 ? (
                           <div className="flex flex-col items-center leading-tight gap-0.5">
                             {r.lre_entry != null && r.lre_stop != null && (
@@ -1223,6 +1388,12 @@ export default function ScannerPage() {
                       </td>
                       <td className="px-2 py-2 text-left text-[10px] whitespace-nowrap border-l border-border/30">
                         <div className="flex flex-col gap-0.5 font-mono leading-tight">
+                          {r.swing_spring && (
+                            <span className="inline-flex max-w-[130px] items-center gap-1 whitespace-normal text-green">
+                              <SpringMarker title={r.swing_spring_text} />
+                              Daily spring
+                            </span>
+                          )}
                           {r.lre_takeaway && (
                             <span className={`max-w-[130px] whitespace-normal ${
                               r.lre_takeaway.includes("bounce risk") || r.lre_takeaway.includes("fade risk")
@@ -1247,16 +1418,17 @@ export default function ScannerPage() {
                       </td>
                       <td
                         className="px-2 py-2 text-left text-[10px] whitespace-nowrap border-l border-border/30"
-                        title={[r.cpr_interpretation, r.cpr_day_15m_volume_text, r.cpr_day_volume_text, r.cpr_day_ref].filter(Boolean).join(" | ") || undefined}
+                        title={[r.cpr_interpretation, r.day_spring_text, r.cpr_day_15m_volume_text, r.cpr_day_volume_text, r.cpr_day_ref].filter(Boolean).join(" | ") || undefined}
                       >
                         {r.cpr_day_result ? (
                           <div className="flex flex-col gap-0.5 leading-tight font-mono">
-                            <span className={`max-w-[170px] whitespace-normal ${
+                            <span className={`inline-flex max-w-[170px] items-start gap-1 whitespace-normal ${
                                 r.cpr_position === "Above" ? "text-green" :
                                 r.cpr_position === "Below" ? "text-red"   :
                                                               "text-yellow"
                               }`}
                             >
+                              {r.day_spring && <SpringMarker title={r.day_spring_text} />}
                               {r.cpr_interpretation ?? compactDayResult(r.cpr_day_result)}
                             </span>
                             <div className="grid grid-cols-[38px_64px] gap-x-1 gap-y-0.5">

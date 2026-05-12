@@ -16,7 +16,6 @@ import (
 	"github.com/aashorefp-droid/stockpulsego/internal/config"
 	"github.com/aashorefp-droid/stockpulsego/internal/handlers"
 	"github.com/aashorefp-droid/stockpulsego/internal/scheduler"
-	"github.com/aashorefp-droid/stockpulsego/internal/telegram"
 )
 
 func main() {
@@ -39,8 +38,7 @@ func main() {
 	srv := handlers.NewServer(cfg)
 
 	// Daily snapshot service (NYSE/NASDAQ swing) and scheduler
-	tg := telegram.NewClient(cfg.TelegramBotToken, cfg.TelegramChatID)
-	sched := scheduler.New(tg, srv.Snapshot)
+	sched := scheduler.New(srv.Telegram, srv.Snapshot, srv.Scanner)
 	if err := sched.Start(); err != nil {
 		log.Printf("scheduler start failed: %v", err)
 	}

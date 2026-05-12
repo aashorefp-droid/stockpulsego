@@ -10,10 +10,11 @@ import (
 )
 
 const (
-	maxQuoteAgeHours = 72.0
-	maxSpreadPct     = 0.50
-	minOI            = 10
-	minMid           = 0.05
+	maxQuoteAgeHours  = 72.0
+	maxSpreadPct      = 0.50
+	minOI             = 10
+	minMid            = 0.05
+	maxZebraExtrinsic = 0.05
 )
 
 type Service struct {
@@ -326,6 +327,10 @@ func (s *Service) buildBullish(ticker string, price float64, expShort, expLong s
 		width := round2(sellC.Strike - buyC.Strike)
 		if validSpread(netDebit, width) {
 			maxProfit := round2(width - netDebit)
+			alt := buildCallZebraAlt(price, expLong, callsLong)
+			if alt == "" {
+				alt = formatLongCallAlt(*buyC, expShort)
+			}
 			return &Strategy{
 				Ticker:    ticker,
 				Strategy:  "Bull Call Spread",
@@ -338,7 +343,7 @@ func (s *Service) buildBullish(ticker string, price float64, expShort, expLong s
 				QuoteTS:   buyC.QuoteTS,
 				Source:    "alpaca",
 				Summary:   formatBCS(ticker, *buyC, *sellC, width, netDebit, maxProfit, expLong),
-				Alt:       formatLongCallAlt(*buyC, expShort),
+				Alt:       alt,
 			}, nil
 		}
 	}
@@ -353,6 +358,7 @@ func (s *Service) buildBullish(ticker string, price float64, expShort, expLong s
 		QuoteTS:  buyC.QuoteTS,
 		Source:   "alpaca",
 		Summary:  formatLongCall(ticker, *buyC, mid, expShort),
+		Alt:      buildCallZebraAlt(price, expLong, callsLong),
 	}, nil
 }
 
@@ -380,6 +386,10 @@ func (s *Service) buildBearish(ticker string, price float64, expShort, expLong s
 		width := round2(buyP.Strike - sellP.Strike)
 		if validSpread(netDebit, width) {
 			maxProfit := round2(width - netDebit)
+			alt := buildPutZebraAlt(price, expLong, putsLong)
+			if alt == "" {
+				alt = formatLongPutAlt(*buyP, expShort)
+			}
 			return &Strategy{
 				Ticker:    ticker,
 				Strategy:  "Bear Put Spread",
@@ -392,7 +402,7 @@ func (s *Service) buildBearish(ticker string, price float64, expShort, expLong s
 				QuoteTS:   buyP.QuoteTS,
 				Source:    "alpaca",
 				Summary:   formatBPS(ticker, *buyP, *sellP, width, netDebit, maxProfit, expLong),
-				Alt:       formatLongPutAlt(*buyP, expShort),
+				Alt:       alt,
 			}, nil
 		}
 	}
@@ -407,6 +417,7 @@ func (s *Service) buildBearish(ticker string, price float64, expShort, expLong s
 		QuoteTS:  buyP.QuoteTS,
 		Source:   "alpaca",
 		Summary:  formatLongPut(ticker, *buyP, mid, expShort),
+		Alt:      buildPutZebraAlt(price, expLong, putsLong),
 	}, nil
 }
 
@@ -590,6 +601,96 @@ func formatLongCallAlt(c marketdata.OptionSnapshot, exp string) string {
 
 func formatLongPutAlt(c marketdata.OptionSnapshot, exp string) string {
 	return "Alt: Long $" + f0(c.Strike) + " Put @ ~$" + f2(midPrice(c)) + " Exp " + exp
+}
+
+func buildCallZebraAlt(price float64, exp string, calls []marketdata.OptionSnapshot) string {
+	if price <= 0 || len(calls) == 0 {
+		return ""
+	}
+	var itm []marketdata.OptionSnapshot
+	for _, c := range calls {
+		if c.Strike < price {
+			itm = append(itm, c)
+		}
+	}
+	longC := nearestStrike(itm, price*0.95)
+	if longC == nil {
+		return ""
+	}
+	var shorts []marketdata.OptionSnapshot
+	for _, c := range calls {
+		if c.Strike > longC.Strike {
+			shorts = append(shorts, c)
+		}
+	}
+	shortC := nearestStrike(shorts, price)
+	if shortC == nil {
+		return ""
+	}
+	debit := round2(2*midPrice(*longC) - midPrice(*shortC))
+	if debit <= 0 {
+		return ""
+	}
+	longExtrinsic := optionExtrinsic(*longC, price)
+	shortExtrinsic := optionExtrinsic(*shortC, price)
+	netExtrinsic := round2(2*longExtrinsic - shortExtrinsic)
+	if netExtrinsic > maxZebraExtrinsic {
+		return ""
+	}
+	breakeven := round2(longC.Strike + debit/2)
+	return "Alt: ZEBRA Buy 2 $" + f0(longC.Strike) + "C / Sell 1 $" + f0(shortC.Strike) + "C " +
+		"Exp " + exp + " | Debit ~$" + f2(debit) + " | BE ~$" + f2(breakeven) +
+		" | Net extrinsic ~$" + f2(netExtrinsic) + " (zero/negative extrinsic fit)"
+}
+
+func buildPutZebraAlt(price float64, exp string, puts []marketdata.OptionSnapshot) string {
+	if price <= 0 || len(puts) == 0 {
+		return ""
+	}
+	var itm []marketdata.OptionSnapshot
+	for _, p := range puts {
+		if p.Strike > price {
+			itm = append(itm, p)
+		}
+	}
+	longP := nearestStrike(itm, price*1.05)
+	if longP == nil {
+		return ""
+	}
+	var shorts []marketdata.OptionSnapshot
+	for _, p := range puts {
+		if p.Strike < longP.Strike {
+			shorts = append(shorts, p)
+		}
+	}
+	shortP := nearestStrike(shorts, price)
+	if shortP == nil {
+		return ""
+	}
+	debit := round2(2*midPrice(*longP) - midPrice(*shortP))
+	if debit <= 0 {
+		return ""
+	}
+	longExtrinsic := optionExtrinsic(*longP, price)
+	shortExtrinsic := optionExtrinsic(*shortP, price)
+	netExtrinsic := round2(2*longExtrinsic - shortExtrinsic)
+	if netExtrinsic > maxZebraExtrinsic {
+		return ""
+	}
+	breakeven := round2(longP.Strike - debit/2)
+	return "Alt: ZEBRA Buy 2 $" + f0(longP.Strike) + "P / Sell 1 $" + f0(shortP.Strike) + "P " +
+		"Exp " + exp + " | Debit ~$" + f2(debit) + " | BE ~$" + f2(breakeven) +
+		" | Net extrinsic ~$" + f2(netExtrinsic) + " (zero/negative extrinsic fit)"
+}
+
+func optionExtrinsic(c marketdata.OptionSnapshot, price float64) float64 {
+	intrinsic := 0.0
+	if c.IsCall {
+		intrinsic = math.Max(0, price-c.Strike)
+	} else {
+		intrinsic = math.Max(0, c.Strike-price)
+	}
+	return round2(math.Max(0, midPrice(c)-intrinsic))
 }
 
 func round1(v float64) float64 {

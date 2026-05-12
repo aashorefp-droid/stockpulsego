@@ -31,6 +31,7 @@ type Server struct {
 	Snapshot     *snapshot.Service
 	Fundamentals *fundamentals.Service
 	DB           *db.Store
+	Telegram     *telegram.Client
 }
 
 // NewServer constructs a Server with all dependencies wired up.
@@ -55,14 +56,15 @@ func NewServer(cfg *config.Config) *Server {
 	} else {
 		log.Printf("tracker DB unavailable (%s): %v", cfg.DBPath, err)
 	}
-	tg := telegram.NewClient(cfg.TelegramBotToken, cfg.TelegramChatID)
-	srv.Snapshot = snapshot.New(srv.Universe, srv.Scanner, srv.DB, tg)
+	srv.Telegram = telegram.NewClient(cfg.TelegramBotToken, cfg.TelegramChatID)
+	srv.Snapshot = snapshot.New(srv.Universe, srv.Scanner, srv.DB, srv.Telegram)
 	return srv
 }
 
 func (srv *Server) Register(r chi.Router) {
 	r.Route("/api", func(r chi.Router) {
 		r.Get("/macro/snapshot", srv.handleMacroSnapshot)
+		r.Post("/telegram/test", srv.handleTelegramTest)
 		r.Get("/scanner/stream", srv.handleScannerStream)
 		r.Get("/scanner/snapshot", srv.handleScannerSnapshot)
 		r.Post("/scanner/snapshot/run", srv.handleScannerSnapshotRun)
