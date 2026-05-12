@@ -65,6 +65,7 @@ func (srv *Server) Register(r chi.Router) {
 	r.Route("/api", func(r chi.Router) {
 		r.Get("/macro/snapshot", srv.handleMacroSnapshot)
 		r.Post("/telegram/test", srv.handleTelegramTest)
+		r.Post("/telegram/lightning-scan", srv.handleTelegramLightningScan)
 		r.Get("/scanner/stream", srv.handleScannerStream)
 		r.Get("/scanner/snapshot", srv.handleScannerSnapshot)
 		r.Post("/scanner/snapshot/run", srv.handleScannerSnapshotRun)

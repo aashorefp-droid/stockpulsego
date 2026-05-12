@@ -648,13 +648,13 @@ export default function ScannerPage() {
 
   async function sendTelegramAlert() {
     setTelegramSending(true);
-    setTelegramStatus("Sending Telegram...");
+    setTelegramStatus("Scanning Default 50 for lightning...");
     try {
-      const res = await fetch(`${API_BASE}/api/telegram/test`, { method: "POST" });
+      const res = await fetch(`${API_BASE}/api/telegram/lightning-scan`, { method: "POST" });
       const json = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(json?.error || `HTTP ${res.status}`);
+      if (!res.ok) throw new Error(json?.error || json?.detail || `HTTP ${res.status}`);
       setTelegramStatus(json?.message || "Telegram alert sent");
-      window.setTimeout(() => setTelegramStatus(""), 4000);
+      window.setTimeout(() => setTelegramStatus(""), 6000);
     } catch (e: any) {
       setTelegramStatus(`Telegram failed: ${e?.message ?? e}`);
     } finally {
@@ -781,9 +781,9 @@ export default function ScannerPage() {
                 ? "border-yellow/30 bg-yellow/10 text-yellow cursor-wait"
                 : "border-border bg-surface text-muted hover:border-yellow/40 hover:text-yellow"
             }`}
-            title="Send a Telegram test alert using the backend Telegram configuration"
+            title="Force scan Default 50 and send lightning-volume options plays to Telegram"
           >
-            {telegramSending ? "TG..." : "TG Alert"}
+            {telegramSending ? "TG..." : "TG Scan"}
           </button>
           {(scanning || results.length > 0 || snapshotStatus || telegramStatus) && (
             <div className="shrink-0 min-w-[230px] max-w-[280px]">
