@@ -140,6 +140,7 @@ func (s *Scheduler) lightningOptionsWatcher() {
 	go s.scanner.Stream(ctx, tickers, nil, out)
 
 	alertDate := marketDate(now)
+	earningsToday := s.sameDayEarningsTickers(alertDate)
 	alerted := 0
 	for res := range out {
 		if res.Error != "" || !res.VolSurge || res.Ticker == "" {
@@ -148,7 +149,8 @@ func (s *Scheduler) lightningOptionsWatcher() {
 		if s.lightningAlreadyAlerted(res.Ticker, alertDate) {
 			continue
 		}
-		if s.tg.Send(formatLightningOptionsAlert(res)) {
+		ticker := strings.ToUpper(strings.TrimSpace(res.Ticker))
+		if s.tg.Send(formatLightningOptionsAlert(res, earningsToday[ticker], alertDate)) {
 			s.markLightningAlerted(res.Ticker, alertDate)
 			alerted++
 		}
@@ -170,6 +172,25 @@ func marketDate(t time.Time) string {
 	return t.Format("2006-01-02")
 }
 
+func (s *Scheduler) sameDayEarningsTickers(date string) map[string]bool {
+	out := map[string]bool{}
+	if s == nil || s.snap == nil || s.snap.DB == nil || date == "" {
+		return out
+	}
+	rows, err := s.snap.DB.GetAllForDate(date)
+	if err != nil {
+		log.Printf("scheduler: same-day earnings lookup failed for %s: %v", date, err)
+		return out
+	}
+	for _, row := range rows {
+		ticker := strings.ToUpper(strings.TrimSpace(row.Ticker))
+		if ticker != "" {
+			out[ticker] = true
+		}
+	}
+	return out
+}
+
 func (s *Scheduler) lightningAlreadyAlerted(ticker, date string) bool {
 	ticker = strings.ToUpper(strings.TrimSpace(ticker))
 	s.lightningMu.Lock()
@@ -184,7 +205,7 @@ func (s *Scheduler) markLightningAlerted(ticker, date string) {
 	s.lightningAlerted[ticker] = date
 }
 
-func formatLightningOptionsAlert(r models.ScanResult) string {
+func formatLightningOptionsAlert(r models.ScanResult, earningsToday bool, earningsDate string) string {
 	dir := "LONG"
 	if r.Direction != "" {
 		dir = r.Direction
@@ -192,6 +213,9 @@ func formatLightningOptionsAlert(r models.ScanResult) string {
 	lines := []string{
 		fmt.Sprintf("⚡ <b>%s lightning volume</b>", html.EscapeString(strings.ToUpper(r.Ticker))),
 		fmt.Sprintf("$%.2f · %s · %s · score %+d", r.Price, html.EscapeString(r.Verdict), html.EscapeString(dir), r.Score),
+	}
+	if earningsToday {
+		lines = append(lines, fmt.Sprintf("<b>!! EARNINGS TODAY (%s) !!</b> same-day earnings; treat volume/options as event-driven.", html.EscapeString(earningsDate)))
 	}
 	if r.CPRDay15mVolText != "" {
 		lines = append(lines, html.EscapeString(r.CPRDay15mVolText))

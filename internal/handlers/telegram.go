@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aashorefp-droid/stockpulsego/internal/db"
 	"github.com/aashorefp-droid/stockpulsego/internal/models"
 	scanpkg "github.com/aashorefp-droid/stockpulsego/internal/scanner"
 )
@@ -69,7 +70,9 @@ func (srv *Server) handleTelegramLightningScan(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	msg := formatLightningScanSummary(hits, scanned)
+	alertDate := time.Now().In(cstLocation()).Format("2006-01-02")
+	earningsToday := sameDayEarningsTickers(srv.DB, alertDate)
+	msg := formatLightningScanSummary(hits, scanned, earningsToday, alertDate)
 	if !srv.Telegram.Send(msg) {
 		writeError(w, http.StatusBadGateway, "Telegram send failed")
 		return
@@ -82,7 +85,7 @@ func (srv *Server) handleTelegramLightningScan(w http.ResponseWriter, r *http.Re
 	})
 }
 
-func formatLightningScanSummary(hits []models.ScanResult, scanned int) string {
+func formatLightningScanSummary(hits []models.ScanResult, scanned int, earningsToday map[string]bool, earningsDate string) string {
 	now := time.Now().In(cstLocation()).Format("2006-01-02 15:04 CT")
 	lines := []string{
 		fmt.Sprintf("⚡ <b>Default 50 lightning scan</b> · %d found / %d scanned", len(hits), scanned),
@@ -99,6 +102,9 @@ func formatLightningScanSummary(hits []models.ScanResult, scanned int) string {
 			html.EscapeString(r.Verdict),
 			html.EscapeString(r.Direction),
 		)
+		if earningsToday[strings.ToUpper(strings.TrimSpace(r.Ticker))] {
+			line += fmt.Sprintf("\n   <b>!! EARNINGS TODAY (%s) !!</b> same-day earnings volume", html.EscapeString(earningsDate))
+		}
 		if r.OptStrategy != "" {
 			line += "\n   Options: " + html.EscapeString(r.OptStrategy)
 			if r.OptSummary != "" {
@@ -118,6 +124,24 @@ func formatLightningScanSummary(hits []models.ScanResult, scanned int) string {
 		lines = append(lines, line)
 	}
 	return strings.Join(lines, "\n\n")
+}
+
+func sameDayEarningsTickers(store *db.Store, date string) map[string]bool {
+	out := map[string]bool{}
+	if store == nil || date == "" {
+		return out
+	}
+	rows, err := store.GetAllForDate(date)
+	if err != nil {
+		return out
+	}
+	for _, row := range rows {
+		ticker := strings.ToUpper(strings.TrimSpace(row.Ticker))
+		if ticker != "" {
+			out[ticker] = true
+		}
+	}
+	return out
 }
 
 func cstLocation() *time.Location {
