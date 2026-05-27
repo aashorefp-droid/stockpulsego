@@ -133,6 +133,10 @@ func (s *Service) scanOne(ticker string, asOf *time.Time) models.ScanResult {
 		RiskPct:           &risk,
 		RRT1:              &rr,
 		ATR:               &atr,
+		EMA11:             a.EMA11,
+		EMA20:             a.EMA20,
+		EMA50:             a.EMA50,
+		EMA200:            a.EMA200,
 	}
 	attachCPRDay(&res, a)
 	attachNextDay(&res, a)

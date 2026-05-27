@@ -157,6 +157,10 @@ type ScanResult struct {
 	RiskPct         *float64       `json:"risk_pct,omitempty"`
 	RRT1            *float64       `json:"rr_t1,omitempty"`
 	ATR             *float64       `json:"atr,omitempty"`
+	EMA11           *float64       `json:"ema11,omitempty"`
+	EMA20           *float64       `json:"ema20,omitempty"`
+	EMA50           *float64       `json:"ema50,omitempty"`
+	EMA200          *float64       `json:"ema200,omitempty"`
 	OptStrategy     string         `json:"opt_strategy,omitempty"`
 	OptSummary      string         `json:"opt_summary,omitempty"`
 	OptDebit        *float64       `json:"opt_debit,omitempty"`

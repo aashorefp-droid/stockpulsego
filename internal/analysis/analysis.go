@@ -82,6 +82,10 @@ type Result struct {
 	IsDowntrend    bool               `json:"is_downtrend"`
 	MA10BelowMA30  bool               `json:"ma10_below_ma30"`
 	PricePos52W    float64            `json:"price_position"`
+	EMA11          *float64           `json:"ema11,omitempty"`
+	EMA20          *float64           `json:"ema20,omitempty"`
+	EMA50          *float64           `json:"ema50,omitempty"`
+	EMA200         *float64           `json:"ema200,omitempty"`
 	Entry          float64            `json:"entry"`
 	StopLoss       float64            `json:"stop_loss"`
 	Target1        float64            `json:"target1"`
@@ -127,6 +131,10 @@ func (s *Service) Analyze(ticker string, asOf *time.Time) (*Result, error) {
 	// Indicators
 	ma10 := ta.SMA(closes, 10)
 	ma30 := ta.SMA(closes, 30)
+	ema11 := ta.EMA(closes, 11)
+	ema20 := ta.EMA(closes, 20)
+	ema50 := ta.EMA(closes, 50)
+	ema200 := ta.EMA(closes, 200)
 	rsi14 := ta.RSI(closes, 14)
 	atr14 := ta.ATR(highs, lows, closes, 14)
 
@@ -193,6 +201,10 @@ func (s *Service) Analyze(ticker string, asOf *time.Time) (*Result, error) {
 	// Trend flags
 	ma10Last, _ := ta.LastValid(ma10)
 	ma30Last, _ := ta.LastValid(ma30)
+	ema11Last, ema11OK := ta.LastValid(ema11)
+	ema20Last, ema20OK := ta.LastValid(ema20)
+	ema50Last, ema50OK := ta.LastValid(ema50)
+	ema200Last, ema200OK := ta.LastValid(ema200)
 	ma10BelowMA30 := ma10Last < ma30Last
 	isUptrend := !ma10BelowMA30 && pricePos > 50
 	isDowntrend := ma10BelowMA30 && pricePos < 50
@@ -278,6 +290,10 @@ func (s *Service) Analyze(ticker string, asOf *time.Time) (*Result, error) {
 		IsDowntrend:        isDowntrend,
 		MA10BelowMA30:      ma10BelowMA30,
 		PricePos52W:        round2(pricePos),
+		EMA11:              roundedPtr(ema11Last, ema11OK),
+		EMA20:              roundedPtr(ema20Last, ema20OK),
+		EMA50:              roundedPtr(ema50Last, ema50OK),
+		EMA200:             roundedPtr(ema200Last, ema200OK),
 		Entry:              round2(entry),
 		StopLoss:           round2(stop),
 		Target1:            round2(t1),
@@ -641,6 +657,14 @@ func round2(v float64) float64 {
 		return 0
 	}
 	return float64(int(v*100+0.5)) / 100
+}
+
+func roundedPtr(v float64, ok bool) *float64 {
+	if !ok || math.IsNaN(v) || math.IsInf(v, 0) {
+		return nil
+	}
+	r := round2(v)
+	return &r
 }
 
 type openingVolumeDay struct {
