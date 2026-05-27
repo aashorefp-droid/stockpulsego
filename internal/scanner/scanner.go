@@ -12,6 +12,7 @@ import (
 	"github.com/aashorefp-droid/stockpulsego/internal/fundamentals"
 	"github.com/aashorefp-droid/stockpulsego/internal/models"
 	"github.com/aashorefp-droid/stockpulsego/internal/options"
+	"github.com/aashorefp-droid/stockpulsego/internal/ta"
 )
 
 type Service struct {
@@ -43,7 +44,7 @@ func (s *Service) Stream(ctx context.Context, tickers []string, asOf *time.Time,
 		go func(ticker string) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			res := s.scanOne(ticker, asOf)
+			res := s.scanOne(ticker, asOf, true)
 			select {
 			case <-ctx.Done():
 			case out <- res:
@@ -53,7 +54,35 @@ func (s *Service) Stream(ctx context.Context, tickers []string, asOf *time.Time,
 	wg.Wait()
 }
 
-func (s *Service) scanOne(ticker string, asOf *time.Time) models.ScanResult {
+// StreamCore runs the scanner without expensive options/fundamentals enrichment.
+// It is intended for broad after-close sweeps where swing structure matters.
+func (s *Service) StreamCore(ctx context.Context, tickers []string, asOf *time.Time, out chan<- models.ScanResult) {
+	defer close(out)
+
+	sem := make(chan struct{}, s.MaxWorkers)
+	var wg sync.WaitGroup
+
+	for _, t := range tickers {
+		select {
+		case <-ctx.Done():
+			return
+		case sem <- struct{}{}:
+		}
+		wg.Add(1)
+		go func(ticker string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			res := s.scanOne(ticker, asOf, false)
+			select {
+			case <-ctx.Done():
+			case out <- res:
+			}
+		}(t)
+	}
+	wg.Wait()
+}
+
+func (s *Service) scanOne(ticker string, asOf *time.Time, includeExtras bool) models.ScanResult {
 	a, err := s.Analysis.Analyze(ticker, asOf)
 	if err != nil {
 		return models.ScanResult{Ticker: ticker, Error: truncateErr(err.Error()), Score: 0}
@@ -140,9 +169,11 @@ func (s *Service) scanOne(ticker string, asOf *time.Time) models.ScanResult {
 	}
 	attachCPRDay(&res, a)
 	attachNextDay(&res, a)
+	attachSwingPreBreakout(&res, a)
+	attachBTDTrigger(&res, a)
 
 	// Fundamentals signals (best-effort, cached 6h, won't block on Yahoo failures)
-	if s.Fundamentals != nil {
+	if includeExtras && s.Fundamentals != nil {
 		if f, err := s.Fundamentals.Get(ticker); err == nil && f != nil {
 			labels := make([]string, 0, len(f.Flags))
 			for _, fl := range f.Flags {
@@ -167,7 +198,7 @@ func (s *Service) scanOne(ticker string, asOf *time.Time) models.ScanResult {
 	}
 
 	// Options strategy + OTM liquid (best-effort)
-	if s.Options != nil && a.CurrentPrice > 0 {
+	if includeExtras && s.Options != nil && a.CurrentPrice > 0 {
 		if strat, err := s.Options.BuildStrategy(ticker, a.CurrentPrice, a.Direction, a.WeeklyFibZone); err == nil && strat != nil {
 			res.OptStrategy = strat.Strategy
 			res.OptSummary = strat.Summary
@@ -195,7 +226,281 @@ func (s *Service) scanOne(ticker string, asOf *time.Time) models.ScanResult {
 	return res
 }
 
-// scoreLRE assigns a 0–5 quality score for low-risk entry with a directional bias.
+func attachSwingPreBreakout(res *models.ScanResult, a *analysis.Result) {
+	if res == nil || a == nil || len(a.Bars) < 55 || res.Price <= 0 {
+		return
+	}
+	if res.Direction == "SHORT" || res.VolTrend == "DISTRIBUTING" {
+		return
+	}
+
+	level, levelName, ok := nearestResistanceBelowBreakout(a.Bars, res.Price)
+	if !ok || level <= 0 {
+		return
+	}
+	distPct := (level - res.Price) / level * 100
+	if distPct < 0 || distPct > 3 {
+		return
+	}
+
+	n := len(a.Bars)
+	recentLow, recentLowOK := minLowRange(a.Bars, n-5, n)
+	priorLow, priorLowOK := minLowRange(a.Bars, n-15, n-5)
+	higherLow := recentLowOK && priorLowOK && recentLow >= priorLow*0.995
+
+	hi10, hiOK := maxHighRange(a.Bars, n-10, n)
+	lo10, loOK := minLowRange(a.Bars, n-10, n)
+	range10Pct := 0.0
+	if hiOK && loOK && res.Price > 0 {
+		range10Pct = (hi10 - lo10) / res.Price * 100
+	}
+	tightBase := range10Pct > 0 && range10Pct <= 8
+	avg5 := avgRange(a.Bars, n-5, n)
+	avgPrev10 := avgRange(a.Bars, n-15, n-5)
+	rangeContracting := avg5 > 0 && avgPrev10 > 0 && avg5 <= avgPrev10*0.9
+	compression := tightBase || rangeContracting
+	if !compression {
+		return
+	}
+
+	emaTrend := res.EMA20 != nil && res.Price > *res.EMA20
+	if res.EMA50 != nil && res.EMA20 != nil {
+		emaTrend = emaTrend && *res.EMA20 >= *res.EMA50*0.985
+	}
+	if !emaTrend {
+		return
+	}
+	emaStack := res.EMA11 != nil && res.EMA20 != nil && res.EMA50 != nil &&
+		*res.EMA11 > *res.EMA20 && *res.EMA20 > *res.EMA50
+
+	vol5 := avgVolume(a.Bars, n-5, n)
+	vol20 := avgVolume(a.Bars, n-25, n-5)
+	quietVolume := vol5 > 0 && vol20 > 0 && vol5 <= vol20*1.1
+
+	score := 0
+	if distPct <= 1.5 {
+		score += 2
+	} else {
+		score++
+	}
+	if tightBase {
+		score++
+	}
+	if rangeContracting {
+		score++
+	}
+	if higherLow {
+		score++
+	}
+	if emaTrend {
+		score += 2
+	}
+	if emaStack {
+		score++
+	}
+	if res.VolTrend == "ACCUMULATING" || quietVolume {
+		score++
+	}
+	if res.BreakoutScore >= 2 {
+		score++
+	}
+	if score < 5 {
+		return
+	}
+
+	levelRounded := round2(level)
+	distRounded := round2(distPct)
+	res.SwingPreBreakout = true
+	res.SwingPreBreakoutScore = score
+	res.SwingPreBreakoutLevel = &levelRounded
+	res.SwingPreBreakoutDistPct = &distRounded
+	res.SwingPreBreakoutTrigger = fmt.Sprintf("Close above $%.2f; prefer >1.3x 20d volume", levelRounded)
+	if recentLowOK {
+		if res.EMA20 != nil {
+			res.SwingPreBreakoutInvalidation = fmt.Sprintf("Close below $%.2f recent higher low or EMA20 $%.2f", round2(recentLow), *res.EMA20)
+		} else {
+			res.SwingPreBreakoutInvalidation = fmt.Sprintf("Close below $%.2f recent higher low", round2(recentLow))
+		}
+	}
+
+	reasons := []string{
+		fmt.Sprintf("%.2f%% below %s $%.2f", distRounded, levelName, levelRounded),
+	}
+	if tightBase {
+		reasons = append(reasons, fmt.Sprintf("tight %.1f%% 10d range", range10Pct))
+	}
+	if rangeContracting {
+		reasons = append(reasons, "range contracting")
+	}
+	if higherLow {
+		reasons = append(reasons, "higher lows")
+	}
+	if emaStack {
+		reasons = append(reasons, "EMA11>20>50")
+	} else {
+		reasons = append(reasons, "above EMA20/50")
+	}
+	if res.VolTrend == "ACCUMULATING" {
+		reasons = append(reasons, "accumulating")
+	} else if quietVolume {
+		reasons = append(reasons, "quiet volume")
+	}
+	res.SwingPreBreakoutReason = strings.Join(reasons, "; ")
+}
+
+func attachBTDTrigger(res *models.ScanResult, a *analysis.Result) {
+	if res == nil || a == nil || len(a.Bars) < 60 || res.Direction == "SHORT" {
+		return
+	}
+	closes := a.Bars.Closes()
+	ema20 := ta.EMA(closes, 20)
+	ema50 := ta.EMA(closes, 50)
+	ema200 := ta.EMA(closes, 200)
+	n := len(closes)
+	price := closes[n-1]
+	e20 := ema20[n-1]
+	if !validFloat(e20) || price <= e20 {
+		return
+	}
+	e50 := ema50[n-1]
+	if validFloat(e50) {
+		if price <= e50 || e20 < e50*0.995 {
+			return
+		}
+	}
+	e200 := ema200[n-1]
+	if validFloat(e200) && price <= e200 {
+		return
+	}
+	if res.VolTrend == "DISTRIBUTING" {
+		return
+	}
+
+	dipped := false
+	for i := maxInt(0, n-4); i < n-1; i++ {
+		if validFloat(ema20[i]) && (closes[i] < ema20[i] || a.Bars[i].Low <= ema20[i]*1.005) {
+			dipped = true
+			break
+		}
+	}
+	if !dipped || price <= closes[n-2] {
+		return
+	}
+
+	res.BTDTrigger = true
+	res.BTDTriggerText = fmt.Sprintf("Reclaimed EMA20 $%.2f after recent dip; trend above EMA50", round2(e20))
+}
+
+func nearestResistanceBelowBreakout(bars models.Bars, price float64) (float64, string, bool) {
+	bestLevel := 0.0
+	bestName := ""
+	bestDist := math.MaxFloat64
+	for _, c := range []struct {
+		lookback int
+		name     string
+	}{
+		{20, "20d high"},
+		{50, "50d high"},
+	} {
+		level, ok := maxHighBeforeLast(bars, c.lookback)
+		if !ok || level <= price {
+			continue
+		}
+		dist := (level - price) / level * 100
+		if dist >= 0 && dist <= 3 && dist < bestDist {
+			bestLevel = level
+			bestName = c.name
+			bestDist = dist
+		}
+	}
+	return bestLevel, bestName, bestLevel > 0
+}
+
+func maxHighBeforeLast(bars models.Bars, lookback int) (float64, bool) {
+	end := len(bars) - 1
+	return maxHighRange(bars, end-lookback, end)
+}
+
+func maxHighRange(bars models.Bars, start, end int) (float64, bool) {
+	start, end = clampRange(len(bars), start, end)
+	if start >= end {
+		return 0, false
+	}
+	v := bars[start].High
+	for i := start + 1; i < end; i++ {
+		if bars[i].High > v {
+			v = bars[i].High
+		}
+	}
+	return v, true
+}
+
+func minLowRange(bars models.Bars, start, end int) (float64, bool) {
+	start, end = clampRange(len(bars), start, end)
+	if start >= end {
+		return 0, false
+	}
+	v := bars[start].Low
+	for i := start + 1; i < end; i++ {
+		if bars[i].Low < v {
+			v = bars[i].Low
+		}
+	}
+	return v, true
+}
+
+func avgRange(bars models.Bars, start, end int) float64 {
+	start, end = clampRange(len(bars), start, end)
+	if start >= end {
+		return 0
+	}
+	sum := 0.0
+	for i := start; i < end; i++ {
+		sum += bars[i].High - bars[i].Low
+	}
+	return sum / float64(end-start)
+}
+
+func avgVolume(bars models.Bars, start, end int) float64 {
+	start, end = clampRange(len(bars), start, end)
+	if start >= end {
+		return 0
+	}
+	sum := 0.0
+	for i := start; i < end; i++ {
+		sum += float64(bars[i].Volume)
+	}
+	return sum / float64(end-start)
+}
+
+func clampRange(n, start, end int) (int, int) {
+	if start < 0 {
+		start = 0
+	}
+	if end > n {
+		end = n
+	}
+	if end < 0 {
+		end = 0
+	}
+	if start > n {
+		start = n
+	}
+	return start, end
+}
+
+func validFloat(v float64) bool {
+	return !math.IsNaN(v) && !math.IsInf(v, 0) && v > 0
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+// scoreLRE assigns a 0-5 quality score for low-risk entry with a directional bias.
 // Mirrors the "exceptional setup" idea but extends to short side and weights signals.
 var etfSectors = map[string]string{
 	"XLB": "Materials", "VAW": "Materials", "RTM": "Materials",

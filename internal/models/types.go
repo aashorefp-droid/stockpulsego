@@ -131,51 +131,60 @@ type ScanResult struct {
 	ExpMoveOpenPct float64 `json:"exp_move_open_pct,omitempty"`
 	DayOpen        float64 `json:"day_open,omitempty"`
 	// LRE = Low Risk Entry: 0–5 quality score with rationale + suggested entry zone
-	LREScore        int            `json:"lre_score,omitempty"`
-	LRELabel        string         `json:"lre_label,omitempty"`
-	LREDirection    string         `json:"lre_direction,omitempty"`
-	LREReason       string         `json:"lre_reason,omitempty"`
-	LREEntry        float64        `json:"lre_entry,omitempty"`    // suggested entry price
-	LREStop         float64        `json:"lre_stop,omitempty"`     // entry-based stop
-	LRERisk         float64        `json:"lre_risk_pct,omitempty"` // risk % from LRE entry
-	LREStatus       string         `json:"lre_status,omitempty"`   // ACTIVE / DISCOUNT / STALE / INVALIDATED
-	LRETakeaway     string         `json:"lre_takeaway,omitempty"`
-	ValuationLabel  string         `json:"valuation_label,omitempty"`
-	ValuationScore  int            `json:"valuation_score,omitempty"`
-	ValuationReason string         `json:"valuation_reason,omitempty"`
-	ValuationFair   *float64       `json:"valuation_fair_value,omitempty"`
-	ValuationUpside *float64       `json:"valuation_upside_pct,omitempty"`
-	ValuationSource string         `json:"valuation_source,omitempty"`
-	VolTrend        string         `json:"vol_trend,omitempty"`
-	VolSurge        bool           `json:"vol_surge,omitempty"`
-	BreakoutScore   int            `json:"breakout_score,omitempty"`
-	DistFromHigh    *float64       `json:"dist_from_high,omitempty"`
-	ShortPct        *float64       `json:"short_pct,omitempty"`
-	Entry           *float64       `json:"entry,omitempty"`
-	StopLoss        *float64       `json:"stop_loss,omitempty"`
-	Target1         *float64       `json:"target1,omitempty"`
-	RiskPct         *float64       `json:"risk_pct,omitempty"`
-	RRT1            *float64       `json:"rr_t1,omitempty"`
-	ATR             *float64       `json:"atr,omitempty"`
-	EMA11           *float64       `json:"ema11,omitempty"`
-	EMA20           *float64       `json:"ema20,omitempty"`
-	EMA50           *float64       `json:"ema50,omitempty"`
-	EMA200          *float64       `json:"ema200,omitempty"`
-	OptStrategy     string         `json:"opt_strategy,omitempty"`
-	OptSummary      string         `json:"opt_summary,omitempty"`
-	OptDebit        *float64       `json:"opt_debit,omitempty"`
-	OptProfit       *float64       `json:"opt_profit,omitempty"`
-	OptSource       string         `json:"opt_source,omitempty"`
-	OptQuoteTS      string         `json:"opt_quote_ts,omitempty"`
-	OptLegs         []OptionLeg    `json:"opt_legs,omitempty"`
-	OptWidth        *float64       `json:"opt_width,omitempty"`
-	OptExpShort     string         `json:"opt_exp_short,omitempty"`
-	OptExpLong      string         `json:"opt_exp_long,omitempty"`
-	OptAlt          string         `json:"opt_alt,omitempty"`
-	OptLiquid       []OTMLiquidRow `json:"opt_liquid,omitempty"`
-	Done            bool           `json:"done,omitempty"`
-	Total           int            `json:"total,omitempty"`
-	Error           string         `json:"error,omitempty"`
+	LREScore                     int            `json:"lre_score,omitempty"`
+	LRELabel                     string         `json:"lre_label,omitempty"`
+	LREDirection                 string         `json:"lre_direction,omitempty"`
+	LREReason                    string         `json:"lre_reason,omitempty"`
+	LREEntry                     float64        `json:"lre_entry,omitempty"`    // suggested entry price
+	LREStop                      float64        `json:"lre_stop,omitempty"`     // entry-based stop
+	LRERisk                      float64        `json:"lre_risk_pct,omitempty"` // risk % from LRE entry
+	LREStatus                    string         `json:"lre_status,omitempty"`   // ACTIVE / DISCOUNT / STALE / INVALIDATED
+	LRETakeaway                  string         `json:"lre_takeaway,omitempty"`
+	ValuationLabel               string         `json:"valuation_label,omitempty"`
+	ValuationScore               int            `json:"valuation_score,omitempty"`
+	ValuationReason              string         `json:"valuation_reason,omitempty"`
+	ValuationFair                *float64       `json:"valuation_fair_value,omitempty"`
+	ValuationUpside              *float64       `json:"valuation_upside_pct,omitempty"`
+	ValuationSource              string         `json:"valuation_source,omitempty"`
+	VolTrend                     string         `json:"vol_trend,omitempty"`
+	VolSurge                     bool           `json:"vol_surge,omitempty"`
+	BreakoutScore                int            `json:"breakout_score,omitempty"`
+	SwingPreBreakout             bool           `json:"swing_prebreakout,omitempty"`
+	SwingPreBreakoutScore        int            `json:"swing_prebreakout_score,omitempty"`
+	SwingPreBreakoutLevel        *float64       `json:"swing_prebreakout_level,omitempty"`
+	SwingPreBreakoutDistPct      *float64       `json:"swing_prebreakout_dist_pct,omitempty"`
+	SwingPreBreakoutTrigger      string         `json:"swing_prebreakout_trigger,omitempty"`
+	SwingPreBreakoutInvalidation string         `json:"swing_prebreakout_invalidation,omitempty"`
+	SwingPreBreakoutReason       string         `json:"swing_prebreakout_reason,omitempty"`
+	BTDTrigger                   bool           `json:"btd_trigger,omitempty"`
+	BTDTriggerText               string         `json:"btd_trigger_text,omitempty"`
+	DistFromHigh                 *float64       `json:"dist_from_high,omitempty"`
+	ShortPct                     *float64       `json:"short_pct,omitempty"`
+	Entry                        *float64       `json:"entry,omitempty"`
+	StopLoss                     *float64       `json:"stop_loss,omitempty"`
+	Target1                      *float64       `json:"target1,omitempty"`
+	RiskPct                      *float64       `json:"risk_pct,omitempty"`
+	RRT1                         *float64       `json:"rr_t1,omitempty"`
+	ATR                          *float64       `json:"atr,omitempty"`
+	EMA11                        *float64       `json:"ema11,omitempty"`
+	EMA20                        *float64       `json:"ema20,omitempty"`
+	EMA50                        *float64       `json:"ema50,omitempty"`
+	EMA200                       *float64       `json:"ema200,omitempty"`
+	OptStrategy                  string         `json:"opt_strategy,omitempty"`
+	OptSummary                   string         `json:"opt_summary,omitempty"`
+	OptDebit                     *float64       `json:"opt_debit,omitempty"`
+	OptProfit                    *float64       `json:"opt_profit,omitempty"`
+	OptSource                    string         `json:"opt_source,omitempty"`
+	OptQuoteTS                   string         `json:"opt_quote_ts,omitempty"`
+	OptLegs                      []OptionLeg    `json:"opt_legs,omitempty"`
+	OptWidth                     *float64       `json:"opt_width,omitempty"`
+	OptExpShort                  string         `json:"opt_exp_short,omitempty"`
+	OptExpLong                   string         `json:"opt_exp_long,omitempty"`
+	OptAlt                       string         `json:"opt_alt,omitempty"`
+	OptLiquid                    []OTMLiquidRow `json:"opt_liquid,omitempty"`
+	Done                         bool           `json:"done,omitempty"`
+	Total                        int            `json:"total,omitempty"`
+	Error                        string         `json:"error,omitempty"`
 }
 
 type OptionLeg struct {
