@@ -26,10 +26,66 @@ func NewService(a *analysis.Service, o *options.Service, f *fundamentals.Service
 	return &Service{Analysis: a, Options: o, Fundamentals: f, MaxWorkers: 12}
 }
 
+type ScanMode string
+
+const (
+	ScanModeOverview   ScanMode = "overview"
+	ScanModeSwing      ScanMode = "swing"
+	ScanModeLongTerm   ScanMode = "longterm"
+	ScanModeFib        ScanMode = "fib"
+	ScanModeDayTrading ScanMode = "daytrading"
+	ScanModeOptions    ScanMode = "options"
+)
+
+func ParseMode(raw string) ScanMode {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", "all", "full", "overview":
+		return ScanModeOverview
+	case "swing":
+		return ScanModeSwing
+	case "longterm", "long_term", "long-term", "lt":
+		return ScanModeLongTerm
+	case "fib", "fib_targets", "fib-targets", "fibonacci":
+		return ScanModeFib
+	case "day", "daytrading", "day_trading", "day-trading", "dt4":
+		return ScanModeDayTrading
+	case "option", "options":
+		return ScanModeOptions
+	default:
+		return ScanModeOverview
+	}
+}
+
+func (m ScanMode) includeFundamentals() bool {
+	return m == ScanModeOverview || m == ScanModeLongTerm
+}
+
+func (m ScanMode) includeOptions() bool {
+	return m == ScanModeOverview || m == ScanModeOptions
+}
+
+func (m ScanMode) includeDayTrading() bool {
+	return m == ScanModeOverview || m == ScanModeDayTrading
+}
+
+func (m ScanMode) includeSwingSetups() bool {
+	return m == ScanModeOverview || m == ScanModeSwing
+}
+
 // Stream runs the scan in parallel and pushes each ScanResult to `out` as it completes.
 // The channel is closed when all tickers are processed or ctx is cancelled.
 func (s *Service) Stream(ctx context.Context, tickers []string, asOf *time.Time, out chan<- models.ScanResult) {
+	s.StreamMode(ctx, tickers, asOf, ScanModeOverview, out)
+}
+
+// StreamMode runs the scan with a focused scanner mode. Overview preserves the
+// full legacy response; focused modes skip expensive enrichments that the view
+// does not display.
+func (s *Service) StreamMode(ctx context.Context, tickers []string, asOf *time.Time, mode ScanMode, out chan<- models.ScanResult) {
 	defer close(out)
+	if mode == "" {
+		mode = ScanModeOverview
+	}
 
 	sem := make(chan struct{}, s.MaxWorkers)
 	var wg sync.WaitGroup
@@ -44,7 +100,7 @@ func (s *Service) Stream(ctx context.Context, tickers []string, asOf *time.Time,
 		go func(ticker string) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			res := s.scanOne(ticker, asOf, true)
+			res := s.scanOne(ticker, asOf, mode)
 			select {
 			case <-ctx.Done():
 			case out <- res:
@@ -57,32 +113,10 @@ func (s *Service) Stream(ctx context.Context, tickers []string, asOf *time.Time,
 // StreamCore runs the scanner without expensive options/fundamentals enrichment.
 // It is intended for broad after-close sweeps where swing structure matters.
 func (s *Service) StreamCore(ctx context.Context, tickers []string, asOf *time.Time, out chan<- models.ScanResult) {
-	defer close(out)
-
-	sem := make(chan struct{}, s.MaxWorkers)
-	var wg sync.WaitGroup
-
-	for _, t := range tickers {
-		select {
-		case <-ctx.Done():
-			return
-		case sem <- struct{}{}:
-		}
-		wg.Add(1)
-		go func(ticker string) {
-			defer wg.Done()
-			defer func() { <-sem }()
-			res := s.scanOne(ticker, asOf, false)
-			select {
-			case <-ctx.Done():
-			case out <- res:
-			}
-		}(t)
-	}
-	wg.Wait()
+	s.StreamMode(ctx, tickers, asOf, ScanModeSwing, out)
 }
 
-func (s *Service) scanOne(ticker string, asOf *time.Time, includeExtras bool) models.ScanResult {
+func (s *Service) scanOne(ticker string, asOf *time.Time, mode ScanMode) models.ScanResult {
 	a, err := s.Analysis.Analyze(ticker, asOf)
 	if err != nil {
 		return models.ScanResult{Ticker: ticker, Error: truncateErr(err.Error()), Score: 0}
@@ -167,13 +201,17 @@ func (s *Service) scanOne(ticker string, asOf *time.Time, includeExtras bool) mo
 		EMA50:             a.EMA50,
 		EMA200:            a.EMA200,
 	}
-	attachCPRDay(&res, a)
-	attachNextDay(&res, a)
-	attachSwingPreBreakout(&res, a)
-	attachBTDTrigger(&res, a)
+	if mode.includeDayTrading() {
+		attachCPRDay(&res, a)
+		attachNextDay(&res, a)
+	}
+	if mode.includeSwingSetups() {
+		attachSwingPreBreakout(&res, a)
+		attachBTDTrigger(&res, a)
+	}
 
 	// Fundamentals signals (best-effort, cached 6h, won't block on Yahoo failures)
-	if includeExtras && s.Fundamentals != nil {
+	if mode.includeFundamentals() && s.Fundamentals != nil {
 		if f, err := s.Fundamentals.Get(ticker); err == nil && f != nil {
 			labels := make([]string, 0, len(f.Flags))
 			for _, fl := range f.Flags {
@@ -198,7 +236,7 @@ func (s *Service) scanOne(ticker string, asOf *time.Time, includeExtras bool) mo
 	}
 
 	// Options strategy + OTM liquid (best-effort)
-	if includeExtras && s.Options != nil && a.CurrentPrice > 0 {
+	if mode.includeOptions() && s.Options != nil && a.CurrentPrice > 0 {
 		if strat, err := s.Options.BuildStrategy(ticker, a.CurrentPrice, a.Direction, a.WeeklyFibZone); err == nil && strat != nil {
 			res.OptStrategy = strat.Strategy
 			res.OptSummary = strat.Summary

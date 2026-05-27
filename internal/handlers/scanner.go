@@ -115,6 +115,7 @@ func (s *Server) handleScannerStream(w http.ResponseWriter, r *http.Request) {
 	}
 	customTickers := q.Get("tickers")
 	asOfStr := q.Get("as_of")
+	scanMode := scanner.ParseMode(q.Get("mode"))
 
 	var tickers []string
 	if customTickers != "" {
@@ -154,7 +155,7 @@ func (s *Server) handleScannerStream(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
-	go s.Scanner.Stream(ctx, tickers, asOf, out)
+	go s.Scanner.StreamMode(ctx, tickers, asOf, scanMode, out)
 
 	count := 0
 	for res := range out {
