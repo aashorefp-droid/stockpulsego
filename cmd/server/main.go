@@ -20,13 +20,14 @@ import (
 
 func main() {
 	cfg := config.Load()
+	requestTimeout := 20 * time.Minute
 
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
-	r.Use(middleware.Timeout(120 * time.Second))
+	r.Use(middleware.Timeout(requestTimeout))
 
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   cfg.CORSOrigins,
@@ -56,8 +57,8 @@ func main() {
 		Addr:         ":" + cfg.Port,
 		Handler:      r,
 		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 130 * time.Second,
-		IdleTimeout:  120 * time.Second,
+		WriteTimeout: requestTimeout + time.Minute,
+		IdleTimeout:  5 * time.Minute,
 	}
 
 	go func() {
